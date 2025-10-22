@@ -155,8 +155,19 @@ catch (Exception ex)
 Console.WriteLine("\n=== Simulating Complete Game ===\n");
 var currentState = initialState;
 int step = 1;
+const int MaxSteps = 500; // Safety limit to prevent infinite loops
 
-while (!game.IsTerminal(currentState, out var termValue))
+// Use much fewer iterations for the simulation (it's called on every step!)
+var simOptions = new MctsOptions
+{
+    Iterations = 100,  // Much less than the initial 10,000
+    RolloutDepth = 100,
+    FinalActionSelector = NodeStats.SelectByMaxVisit,
+    Seed = 42
+};
+var simMcts = new Mcts<QuestState, QuestAction>(game, selection, expansion, simulation, backprop, simOptions);
+
+while (!game.IsTerminal(currentState, out var termValue) && step <= MaxSteps)
 {
     string statusMsg;
     if (currentState.ActiveHeroIndex == -1)
@@ -178,13 +189,18 @@ while (!game.IsTerminal(currentState, out var termValue))
     
     Console.WriteLine($"--- Turn {currentState.TurnCount + 1}, Step {step++} ---");
     Console.WriteLine($"{statusMsg}");
-    
-    var (action, _) = mcts.Search(currentState);
+
+    var (action, _) = simMcts.Search(currentState);
     Console.WriteLine($"Action: {action}");
     
     currentState = game.Step(currentState, action);
     PrintState(currentState);
     Console.WriteLine();
+}
+
+if (step > MaxSteps)
+{
+    Console.WriteLine($"\n=== Simulation stopped after {MaxSteps} steps (safety limit) ===");
 }
 
 Console.WriteLine("=== Game Over ===");

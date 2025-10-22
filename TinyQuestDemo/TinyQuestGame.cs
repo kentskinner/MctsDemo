@@ -209,23 +209,21 @@ namespace TinyQuestDemo
                 _ => throw new InvalidOperationException()
             };
 
-            // Can always end activation
-            yield return QuestAction.EndActivation;
+            // Can end activation only if: hero has no actions left, OR hero has already moved, OR hero has exited/died
+            if (s.ActionsRemaining <= 0 || activeHero.HasMoved || activeHero.HasExited || activeHero.IsDead)
+                yield return QuestAction.EndActivation;
 
-            // If hero has exited, is dead, or no actions remaining, that's the only option
+            // If hero has exited, is dead, or no actions remaining, that's the only option (EndActivation)
             if (activeHero.HasExited || activeHero.IsDead || s.ActionsRemaining <= 0)
                 yield break;
 
             // Movement actions (can only move once per activation) - 5x6 grid
             if (!activeHero.HasMoved)
             {
-                for (int hex = 0; hex < 30; hex++)
+                foreach (int adjacentHex in GetAdjacentHexes(activeHero.CurrentHex))
                 {
-                    if (hex != activeHero.CurrentHex)
-                    {
-                        // Convert hex number to correct enum value (MoveToHex0 starts at enum index 4)
-                        yield return (QuestAction)((int)QuestAction.MoveToHex0 + hex);
-                    }
+                    // Convert hex number to correct enum value (MoveToHex0 starts at enum index 4)
+                    yield return (QuestAction)((int)QuestAction.MoveToHex0 + adjacentHex);
                 }
             }
 
@@ -519,6 +517,39 @@ namespace TinyQuestDemo
                 3 => s.Mage,
                 _ => throw new InvalidOperationException("No active hero")
             };
+        }
+
+        private IEnumerable<int> GetAdjacentHexes(int hex)
+        {
+            // 5x6 rectangular grid (30 hexes total) with simple adjacency
+            // Hex layout (row-major):
+            //  0  1  2  3  4
+            //  5  6  7  8  9
+            // 10 11 12 13 14
+            // 15 16 17 18 19
+            // 20 21 22 23 24
+            // 25 26 27 28 29
+            //
+            // Each hex has up to 4 neighbors (N, S, E, W)
+
+            int col = hex % 5;
+            int row = hex / 5;
+
+            // North
+            if (row > 0)
+                yield return hex - 5;
+
+            // South
+            if (row < 5)
+                yield return hex + 5;
+
+            // West
+            if (col > 0)
+                yield return hex - 1;
+
+            // East
+            if (col < 4)
+                yield return hex + 1;
         }
     }
 }
