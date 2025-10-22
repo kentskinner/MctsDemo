@@ -1,3 +1,0 @@
-﻿using GenericMcts;
-
-Demo.Main();

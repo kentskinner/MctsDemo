@@ -1,0 +1,314 @@
+using TinyQuestDemo;
+
+namespace TinyQuestDemo.Tests;
+
+public class LegalActionsTests
+{
+    private readonly TinyQuestGame _game = new();
+
+    [Fact]
+    public void InitialState_BothHeroesAvailable()
+    {
+        // Arrange
+        var state = CreateInitialState();
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Equal(2, actions.Count);
+        Assert.Contains(QuestAction.ActivateWarrior, actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+    }
+
+    [Fact]
+    public void AfterWarriorActivates_OnlyElfAvailable()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+        Assert.DoesNotContain(QuestAction.ActivateWarrior, actions);
+        Assert.Equal(0, state.TurnCount); // Turn not complete yet
+    }
+
+    [Fact]
+    public void AfterElfActivates_OnlyWarriorAvailable()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateElf);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.ActivateWarrior, actions);
+        Assert.DoesNotContain(QuestAction.ActivateElf, actions);
+        Assert.Equal(0, state.TurnCount); // Turn not complete yet
+    }
+
+    [Fact]
+    public void AfterBothActivate_BothAvailableAgain()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        // Warrior activates and ends
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.EndActivation);
+        // Elf activates and ends (completes turn)
+        state = _game.Step(state, QuestAction.ActivateElf);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Equal(2, actions.Count);
+        Assert.Contains(QuestAction.ActivateWarrior, actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+        Assert.Equal(1, state.TurnCount); // Turn complete, incremented to 1
+    }
+
+    [Fact]
+    public void WarriorExited_OnlyElfAvailable()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        // Move warrior to exit and exit
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.MoveToHex1);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+        Assert.DoesNotContain(QuestAction.ActivateWarrior, actions);
+        Assert.Equal(0, state.TurnCount); // Turn not complete yet
+    }
+
+    [Fact]
+    public void ElfExited_OnlyWarriorAvailable()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        // Move elf to exit and exit
+        state = _game.Step(state, QuestAction.ActivateElf);
+        state = _game.Step(state, QuestAction.MoveToHex1);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.ActivateWarrior, actions);
+        Assert.DoesNotContain(QuestAction.ActivateElf, actions);
+        Assert.Equal(0, state.TurnCount); // Turn not complete yet
+    }
+
+    [Fact]
+    public void ActiveHero_CanMove()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Contains(QuestAction.MoveToHex1, actions);
+        Assert.Contains(QuestAction.MoveToHex2, actions);
+        Assert.Contains(QuestAction.EndActivation, actions);
+        Assert.DoesNotContain(QuestAction.MoveToHex0, actions); // Can't move to current hex
+    }
+
+    [Fact]
+    public void ActiveHero_AfterMoving_CannotMoveAgain()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.MoveToHex1);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.EndActivation, actions);
+        Assert.DoesNotContain(QuestAction.MoveToHex0, actions);
+        Assert.DoesNotContain(QuestAction.MoveToHex2, actions);
+    }
+
+    [Fact]
+    public void ActiveHero_OnChestHex_CanOpenChest()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.MoveToHex2); // Move to chest
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Contains(QuestAction.OpenChest, actions);
+        Assert.Contains(QuestAction.EndActivation, actions);
+    }
+
+    [Fact]
+    public void ActiveHero_NotOnChestHex_CannotOpenChest()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.DoesNotContain(QuestAction.OpenChest, actions);
+    }
+
+    [Fact]
+    public void ActiveHero_ChestAlreadyOpened_CannotOpenChest()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.MoveToHex2);
+        state = _game.Step(state, QuestAction.OpenChest);
+        state = _game.Step(state, QuestAction.EndActivation);
+        state = _game.Step(state, QuestAction.ActivateElf);
+        state = _game.Step(state, QuestAction.MoveToHex2);
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.DoesNotContain(QuestAction.OpenChest, actions);
+        Assert.Equal(0, state.TurnCount); // Elf is still active, turn not complete until EndActivation
+    }
+
+    [Fact]
+    public void ActiveHero_NoActionsRemaining_OnlyEndActivation()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.MoveToHex1);
+        state = _game.Step(state, QuestAction.MoveToHex2); // Second action consumes last action point
+
+        // Act
+        var actions = _game.LegalActions(state).ToList();
+
+        // Assert
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.EndActivation, actions);
+    }
+
+    [Fact]
+    public void EndActivation_WhenOtherHeroExited_TurnAutoAdvances()
+    {
+        // Arrange - Warrior has exited, Elf activates
+        var state = CreateInitialState();
+        state = state with
+        {
+            Warrior = state.Warrior with { HasExited = true },
+            TurnCount = 0
+        };
+        
+        // Elf activates and ends
+        state = _game.Step(state, QuestAction.ActivateElf);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Assert - Turn should auto-advance since Warrior is gone
+        Assert.Equal(1, state.TurnCount); // Turn incremented
+        Assert.False(state.ElfActivatedThisTurn); // Flags reset
+        Assert.False(state.WarriorActivatedThisTurn);
+        Assert.Equal(-1, state.ActiveHeroIndex); // Back to hero selection
+        
+        // Elf should be available again for the next turn
+        var actions = _game.LegalActions(state).ToList();
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+    }
+
+    [Fact]
+    public void EndActivation_WhenBothHeroesActivated_TurnAdvances()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        
+        // Warrior activates and ends
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.EndActivation);
+        
+        // Elf activates and ends
+        state = _game.Step(state, QuestAction.ActivateElf);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Assert
+        Assert.Equal(1, state.TurnCount); // Turn incremented
+        Assert.False(state.ElfActivatedThisTurn); // Both flags reset
+        Assert.False(state.WarriorActivatedThisTurn);
+        
+        // Both heroes should be available again
+        var actions = _game.LegalActions(state).ToList();
+        Assert.Equal(2, actions.Count);
+        Assert.Contains(QuestAction.ActivateWarrior, actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+    }
+
+    [Fact]
+    public void EndActivation_WhenOnlyOneHeroActivated_TurnDoesNotAdvance()
+    {
+        // Arrange
+        var state = CreateInitialState();
+        
+        // Warrior activates and ends
+        state = _game.Step(state, QuestAction.ActivateWarrior);
+        state = _game.Step(state, QuestAction.EndActivation);
+
+        // Assert
+        Assert.Equal(0, state.TurnCount); // Turn NOT incremented yet
+        Assert.True(state.WarriorActivatedThisTurn); // Warrior flag still true
+        Assert.False(state.ElfActivatedThisTurn);
+        
+        // Only Elf should be available
+        var actions = _game.LegalActions(state).ToList();
+        Assert.Single(actions);
+        Assert.Contains(QuestAction.ActivateElf, actions);
+    }
+
+    private QuestState CreateInitialState()
+    {
+        return new QuestState(
+            Warrior: new Hero(HeroType.Warrior, CurrentHex: 0, HasExited: false, HasMoved: false),
+            Elf: new Hero(HeroType.Elf, CurrentHex: 0, HasExited: false, HasMoved: false),
+            ActiveHeroIndex: -1,
+            ActionsRemaining: 0,
+            ChestPresent: true,
+            ItemRetrieved: false,
+            ExitHex: 1,
+            ChestHex: 2,
+            TurnCount: 0,
+            WarriorActivatedThisTurn: false,
+            ElfActivatedThisTurn: false
+        );
+    }
+}

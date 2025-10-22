@@ -275,21 +275,31 @@ namespace GenericMcts
 
         public (TAction action, IReadOnlyList<(TAction action, int visits, double value)> stats) Search(TState rootState)
         {
-            var root = MakeNode(rootState, parent: null, incoming: default!);
+            return Search(rootState, out _);
+        }
 
-            // Initialize Untried set for the root (if decision node)
-            if (root.Kind == NodeKind.Decision)
-                root.Untried.AddRange(_game.LegalActions(root.State));
+        public (TAction action, IReadOnlyList<(TAction action, int visits, double value)> stats) Search(TState rootState, out Node<TState, TAction> rootNode)
+        {
+            var root = MakeNode(rootState, parent: null, incoming: default!);
+            rootNode = root;
+
+            // Note: MakeNode already initializes Untried for decision nodes, so no need to do it again here
 
             for (int i = 0; i < _opt.Iterations; i++)
             {
                 // 1) Selection (down to a leaf that has untried or is terminal/chance)
                 var leaf = SelectDown(root);
 
+                if (i <= 5)
+                {
+                    Console.WriteLine($"[Iter {i}] Leaf: Kind={leaf.Kind}, Untried={leaf.Untried.Count}, Children={leaf.Children.Count}, HashCode={leaf.GetHashCode()}");
+                }
+
                 // 2) Handle terminal immediately
                 if (leaf.Kind == NodeKind.Terminal)
                 {
                     _backprop.Backpropagate(leaf, ValueOf(leaf.State));
+                    if (i <= 2) Console.WriteLine($"[Iter {i}] Terminal node, backpropagated");
                     continue;
                 }
 
@@ -302,6 +312,7 @@ namespace GenericMcts
                     var ch = AttachIfNeeded(leaf, rolled, kind, default!);
                     var v = SimulateFrom(ch.State);
                     _backprop.Backpropagate(ch, v);
+                    if (i <= 2) Console.WriteLine($"[Iter {i}] Chance node, sampled and backpropagated");
                     continue;
                 }
 
@@ -314,11 +325,25 @@ namespace GenericMcts
                     var kind = Classify(s2);
                     nodeForPlayout = leaf.AddChild(s2, kind, action);
 
+                    if (i <= 5)
+                    {
+                        Console.WriteLine($"[Iter {i}] Expanded action={action}, newNode.Kind={kind}");
+                        Console.WriteLine($"[Iter {i}] After expansion: Leaf.Children={leaf.Children.Count}, Leaf.Untried={leaf.Untried.Count}");
+                        if (kind == NodeKind.Terminal)
+                        {
+                            Console.WriteLine($"[Iter {i}] WARNING: Created TERMINAL child!");
+                        }
+                    }
+
                     if (nodeForPlayout.Kind == NodeKind.Decision)
                         nodeForPlayout.Untried.AddRange(_game.LegalActions(nodeForPlayout.State));
                 }
                 else
                 {
+                    if (i <= 2)
+                    {
+                        Console.WriteLine($"[Iter {i}] No untried actions, calling SelectChild on leaf with {leaf.Children.Count} children");
+                    }
                     nodeForPlayout = _selection.SelectChild(leaf, _rng);
                 }
 
@@ -332,9 +357,19 @@ namespace GenericMcts
             if (root.Children.Count == 0)
                 throw new InvalidOperationException("Root has no children; no legal actions?");
 
-            var scored = root.Children
-                .Select((ch, idx) => (idx, action: ch.IncomingAction!, visits: ch.Visits, total: ch.TotalValue))
-                .Select(x => (x.action, x.visits, x.total, score: _opt.FinalActionSelector!.Invoke(new NodeStats(x.idx, x.visits, x.total))))
+            // Group children by action and sum their statistics
+            var groupedByAction = root.Children
+                .GroupBy(ch => ch.IncomingAction!)
+                .Select(g => new
+                {
+                    action = g.Key,
+                    visits = g.Sum(ch => ch.Visits),
+                    total = g.Sum(ch => ch.TotalValue)
+                })
+                .ToList();
+
+            var scored = groupedByAction
+                .Select((x, idx) => (x.action, x.visits, x.total, score: _opt.FinalActionSelector!.Invoke(new NodeStats(idx, x.visits, x.total))))
                 .OrderByDescending(x => x.score)
                 .ToList();
 
@@ -349,7 +384,10 @@ namespace GenericMcts
 
         private Node<TState, TAction> MakeNode(TState state, Node<TState, TAction>? parent, TAction incoming)
         {
-            var s = RollForwardIfEnabled(state);
+            // Do NOT roll forward at root; we still need to return the first action.
+            // Only collapse deterministic chains for child nodes.
+            var s = parent is null ? state : RollForwardIfEnabled(state);
+
             var kind = Classify(s);
             var n = new Node<TState, TAction>(s, kind, parent, parent == null ? default : incoming);
             if (kind == NodeKind.Decision)
@@ -408,8 +446,8 @@ namespace GenericMcts
 
         private Node<TState, TAction> AttachIfNeeded(Node<TState, TAction> parent, TState childState, NodeKind kind, TAction incoming)
         {
-            // Simple identity check here; for full TT add a state hasher and map.
-            var existing = parent.Children.FirstOrDefault(c => ReferenceEquals(c.State, childState));
+            // Use Equals to support value-type or properly-overridden state equality
+            var existing = parent.Children.FirstOrDefault(c => Equals(c.State, childState));
             if (existing != null) return existing;
 
             var ch = parent.AddChild(childState, kind, incoming);
@@ -420,136 +458,5 @@ namespace GenericMcts
 
         private double SimulateFrom(in TState state) => _simulation.Simulate(state, _game, _rng, _opt.RolloutDepth);
         private double ValueOf(in TState state) => _game.IsTerminal(state, out var v) ? v : 0.0;
-    }
-
-    // =============================================================
-    // Example Game: Pig Dice (CHANCE nodes)
-    // =============================================================
-
-    // Actions: player can Roll (which creates a CHANCE state) or Hold (bank turn points)
-    public enum PigAction { Roll, Hold }
-
-    public readonly record struct PigState(
-        int P0, // score of root player
-        int P1, // score of opponent
-        int TurnTotal,
-        int PlayerToMove, // 0 = root, 1 = opponent
-        bool AwaitingRoll // if true => CHANCE node
-    );
-
-    public sealed class PigGame : IGameModel<PigState, PigAction>
-    {
-        private readonly int _target;
-        public PigGame(int targetScore = 20) { _target = targetScore; }
-
-        public bool IsTerminal(in PigState s, out double terminalValue)
-        {
-            if (s.P0 >= _target)
-            {
-                terminalValue = +1.0; // root wins
-                return true;
-            }
-            if (s.P1 >= _target)
-            {
-                terminalValue = -1.0; // root loses
-                return true;
-            }
-            terminalValue = 0;
-            return false;
-        }
-
-        public bool IsChanceNode(in PigState s) => s.AwaitingRoll;
-
-        public PigState SampleChance(in PigState s, Random rng, out double logProb)
-        {
-            // Roll a fair d6
-            int die = rng.Next(1, 7);
-            logProb = Math.Log(1.0 / 6.0);
-
-            if (die == 1)
-            {
-                // Bust: lose turn total, pass turn
-                return s.PlayerToMove == 0
-                    ? new PigState(s.P0, s.P1, 0, 1, false)
-                    : new PigState(s.P0, s.P1, 0, 0, false);
-            }
-            else
-            {
-                // Add to turn total and continue player's turn
-                return new PigState(s.P0, s.P1, s.TurnTotal + die, s.PlayerToMove, false);
-            }
-        }
-
-        public IEnumerable<PigAction> LegalActions(PigState s)
-        {
-            if (s.AwaitingRoll) yield break; // CHANCE state has no player actions
-
-            // Always allow Roll; allow Hold if there's something to hold (optional rule: allow Hold anytime)
-            yield return PigAction.Roll;
-            if (s.TurnTotal > 0) yield return PigAction.Hold;
-        }
-
-        public PigState Step(in PigState s, in PigAction a)
-        {
-            if (a == PigAction.Roll)
-            {
-                // Move to CHANCE node: awaiting die result
-                return new PigState(s.P0, s.P1, s.TurnTotal, s.PlayerToMove, true);
-            }
-            else // Hold
-            {
-                if (s.PlayerToMove == 0)
-                {
-                    return new PigState(s.P0 + s.TurnTotal, s.P1, 0, 1, false);
-                }
-                else
-                {
-                    return new PigState(s.P0, s.P1 + s.TurnTotal, 0, 0, false);
-                }
-            }
-        }
-    }
-
-    // =============================================================
-    // Demo: run MCTS from start state and print the chosen action
-    // =============================================================
-
-    public static class Demo
-    {
-        public static void Main()
-        {
-            var game = new PigGame(targetScore: 20);
-            var selection = new Ucb1Selection<PigState, PigAction>(explorationC: 1.2);
-            var expansion = new UniformSingleExpansion<PigState, PigAction>(deterministicRollForward: true);
-            var simulation = new UniformRandomSimulation<PigState, PigAction>();
-            var backprop   = new SumBackpropagation<PigState, PigAction>();
-
-            var options = new MctsOptions {
-                Iterations = 20_000,
-                RolloutDepth = 200,
-                FinalActionSelector = NodeStats.SelectByMaxVisit,
-                Seed = 42
-            };
-
-            var mcts = new Mcts<PigState, PigAction>(game, selection, expansion, simulation, backprop, options);
-
-            var root = new PigState(P0: 0, P1: 0, TurnTotal: 0, PlayerToMove: 0, AwaitingRoll: false);
-            var (best, stats) = mcts.Search(root);
-
-            Console.WriteLine($"Best root action: {best}");
-            foreach (var (a, n, w) in stats)
-            {
-                var mean = n > 0 ? w / n : 0.0;
-                Console.WriteLine($"  {a,-5}  visits={n,6}  total={w,8:F2}  mean={mean,7:F3}");
-            }
-
-            // Quick play-one-step to show chance behavior
-            var next = game.Step(root, best);
-            if (game.IsChanceNode(next))
-            {
-                next = game.SampleChance(next, new Random(123), out _);
-                Console.WriteLine($"After sampling chance (die roll), state = P0={next.P0} P1={next.P1} Turn={next.TurnTotal} Player={next.PlayerToMove}");
-            }
-        }
     }
 }
