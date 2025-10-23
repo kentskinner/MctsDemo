@@ -214,12 +214,12 @@ while (!game.IsTerminal(in currentState, out var terminalValue))
     if (game.IsChanceNode(in currentState))
     {
         var prevStateForChance = currentState;
-        currentState = game.SampleChance(in currentState, Random.Shared, out var logProb);
+        currentState = game.SampleChanceOutcome(currentState, Random.Shared);
 
         // Print chance node outcomes
         if (prevStateForChance.ChanceNodeType == MonsterSpawn)
         {
-            Console.WriteLine($"  *** Monster spawn phase (logProb: {logProb:F2}) ***");
+            Console.WriteLine($"  *** Monster spawn phase ***");
             if (currentState.Monsters.Length > prevStateForChance.Monsters.Length)
             {
                 var newMonster = currentState.Monsters[currentState.Monsters.Length - 1];
@@ -232,7 +232,7 @@ while (!game.IsTerminal(in currentState, out var terminalValue))
         }
         else if (prevStateForChance.ChanceNodeType == MonsterPhase)
         {
-            Console.WriteLine($"  *** Monster movement phase (logProb: {logProb:F2}) ***");
+            Console.WriteLine($"  *** Monster movement phase ***");
             if (currentState.Monsters.Length > 0)
                 Console.WriteLine($"  *** Monsters: {currentState.Monsters.Count(m => m.Health > 0)} alive ***");
             
@@ -268,8 +268,8 @@ while (!game.IsTerminal(in currentState, out var terminalValue))
                     int damage = prevMonster.Health - currMonster.Health;
                     string outcomeType = damage == 0 ? "MISS" : 
                                        damage == attackingHero.Damage ? "HIT" : "CRITICAL";
-                    Console.WriteLine($"  *** {outcomeType}! Hero {attackingHeroId} deals {damage} damage (logProb: {logProb:F2}) ***");
-                    
+                    Console.WriteLine($"  *** {outcomeType}! Hero {attackingHeroId} deals {damage} damage ***");
+
                     if (currMonster.Health <= 0)
                         Console.WriteLine("  *** Monster defeated! ***");
                     foundDamage = true;
@@ -280,7 +280,7 @@ while (!game.IsTerminal(in currentState, out var terminalValue))
             if (!foundDamage)
             {
                 // Miss - no damage dealt
-                Console.WriteLine($"  *** MISS! Hero {attackingHeroId} deals 0 damage (logProb: {logProb:F2}) ***");
+                Console.WriteLine($"  *** MISS! Hero {attackingHeroId} deals 0 damage ***");
             }
         }
         

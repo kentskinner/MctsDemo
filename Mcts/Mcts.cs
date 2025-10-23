@@ -26,35 +26,60 @@ namespace Mcts;
         /// <summary>True if this node is a chance node (random event to sample rather than choose).</summary>
         bool IsChanceNode(in TState state);
 
-    /// <summary>
-    /// Optional: Enumerate all possible outcomes for a chance node with their probabilities.
-    /// If this returns any outcomes, MCTS will expand all of them as children (like decision nodes).
-    /// If this returns empty, MCTS will fall back to SampleChance (sampling approach).
-    /// This is efficient for small outcome spaces (e.g., 3 attack outcomes, 4 spawn locations).
-    /// </summary>
-    IEnumerable<(TState outcome, double probability)> ChanceOutcomes(TState state)
-    {
-        // Default implementation: no enumeration, use sampling instead
-        yield break;
-    }
-
-    /// <summary>
-    /// Sample one random outcome for a chance node and return the next state.
-    /// Return also the log-probability if you want to use it (not required by default).
-    /// Used when ChanceOutcomes returns empty (sampling approach for large outcome spaces).
-    /// </summary>
-    TState SampleChance(in TState state, Random rng, out double logProb);
+        /// <summary>
+        /// Enumerate all possible outcomes for a chance node with their probabilities.
+        /// MCTS will use this to either:
+        /// 1. Expand all outcomes as children (if outcome count is reasonable)
+        /// 2. Sample one outcome using the probabilities (during rollouts or when outcome space is large)
+        /// 
+        /// This is the ONLY method you need to implement for chance nodes.
+        /// </summary>
+        IEnumerable<(TState outcome, double probability)> ChanceOutcomes(TState state);
 
         /// <summary>Enumerate legal actions at a decision node.</summary>
         IEnumerable<TAction> LegalActions(TState state);
 
         /// <summary>Apply an action to get the next state.</summary>
         TState Step(in TState state, in TAction action);
-    }
-
-    // ----------------------------
+    }    // ----------------------------
     // Policies (swappable)
     // ----------------------------
+
+    /// <summary>
+    /// Helper methods for working with game models
+    /// </summary>
+    public static class GameModelExtensions
+    {
+        /// <summary>
+        /// Sample one outcome from ChanceOutcomes using the provided probabilities.
+        /// This is used during rollouts and when falling back from enumeration.
+        /// </summary>
+        public static TState SampleChanceOutcome<TState, TAction>(
+            this IGameModel<TState, TAction> game,
+            TState state,
+            Random rng)
+        {
+            var outcomes = game.ChanceOutcomes(state).ToList();
+            if (outcomes.Count == 0)
+                throw new InvalidOperationException("ChanceOutcomes returned empty - chance nodes must return at least one outcome");
+
+            if (outcomes.Count == 1)
+                return outcomes[0].outcome;
+
+            // Sample using cumulative probabilities
+            double r = rng.NextDouble();
+            double cumulative = 0.0;
+            foreach (var (outcome, probability) in outcomes)
+            {
+                cumulative += probability;
+                if (r < cumulative)
+                    return outcome;
+            }
+
+            // Fallback to last outcome (handles floating point rounding)
+            return outcomes[outcomes.Count - 1].outcome;
+        }
+    }
 
     public interface ISelectionPolicy<TState, TAction>
     {
@@ -155,7 +180,7 @@ namespace Mcts;
 
                 if (game.IsChanceNode(s))
                 {
-                    s = game.SampleChance(s, rng, out _);
+                    s = game.SampleChanceOutcome(s, rng);
                     continue;
                 }
 
@@ -378,8 +403,8 @@ namespace Mcts;
                 }
                 else
                 {
-                    // Not enumerable - fall back to sampling
-                    var s2 = _game.SampleChance(leaf.State, _rng, out _);
+                    // Not enumerable (too many outcomes) - sample one outcome
+                    var s2 = _game.SampleChanceOutcome(leaf.State, _rng);
                     var rolled = RollForwardIfEnabled(s2);
                     var kind = Classify(rolled);
                     var ch = AttachIfNeeded(leaf, rolled, kind, default!);
