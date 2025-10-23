@@ -78,7 +78,7 @@ namespace TinyQuestDemo
     {
         private const int MaxTurns = 20;
         private const double ExitReward = 1.0;      // Reward for survival
-        private const double ItemReward = 0.5;      // Reward per special item collected (increased!)
+        private const double ItemReward = 0.5;      // Reward per special item collected
         private const double InjuryPenalty = -0.3;  // Penalty for being injured
         private const double DeathPenalty = -1.0;   // Penalty for death
 

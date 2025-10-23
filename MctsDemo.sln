@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyQuestDemo", "TinyQuestD
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TinyQuestDemo.Tests", "TinyQuestDemo.Tests\TinyQuestDemo.Tests.csproj", "{4D80CFE4-A1B4-4BDD-A4BC-ED6067B19A5F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TreasureHunt", "TreasureHunt\TreasureHunt.csproj", "{BF5F0867-2E82-4044-9ECF-4AB3C8F38618}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,5 +38,9 @@ Global
 		{4D80CFE4-A1B4-4BDD-A4BC-ED6067B19A5F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4D80CFE4-A1B4-4BDD-A4BC-ED6067B19A5F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4D80CFE4-A1B4-4BDD-A4BC-ED6067B19A5F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BF5F0867-2E82-4044-9ECF-4AB3C8F38618}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BF5F0867-2E82-4044-9ECF-4AB3C8F38618}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BF5F0867-2E82-4044-9ECF-4AB3C8F38618}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BF5F0867-2E82-4044-9ECF-4AB3C8F38618}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

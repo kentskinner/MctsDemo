@@ -295,6 +295,7 @@ public class LegalActionsTests
         Assert.Contains(QuestAction.ActivateElf, actions);
     }
 
+    /*
     private QuestState CreateInitialState()
     {
         return new QuestState(

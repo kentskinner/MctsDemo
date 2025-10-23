@@ -223,6 +223,7 @@ namespace GenericMcts
         public int RollForwardDeterministicMaxSteps = 10_000; // safety fuse
         public Func<NodeStats, double>? FinalActionSelector = NodeStats.SelectByMaxVisit; // how to choose root action
         public int? Seed = null;
+        public bool Verbose = false; // controls debug output
     }
 
     public readonly struct NodeStats
@@ -290,7 +291,7 @@ namespace GenericMcts
                 // 1) Selection (down to a leaf that has untried or is terminal/chance)
                 var leaf = SelectDown(root);
 
-                if (i <= 5)
+                if (_opt.Verbose && i <= 5)
                 {
                     Console.WriteLine($"[Iter {i}] Leaf: Kind={leaf.Kind}, Untried={leaf.Untried.Count}, Children={leaf.Children.Count}, HashCode={leaf.GetHashCode()}");
                 }
@@ -299,7 +300,7 @@ namespace GenericMcts
                 if (leaf.Kind == NodeKind.Terminal)
                 {
                     _backprop.Backpropagate(leaf, ValueOf(leaf.State));
-                    if (i <= 2) Console.WriteLine($"[Iter {i}] Terminal node, backpropagated");
+                    if (_opt.Verbose && i <= 2) Console.WriteLine($"[Iter {i}] Terminal node, backpropagated");
                     continue;
                 }
 
@@ -312,7 +313,7 @@ namespace GenericMcts
                     var ch = AttachIfNeeded(leaf, rolled, kind, default!);
                     var v = SimulateFrom(ch.State);
                     _backprop.Backpropagate(ch, v);
-                    if (i <= 2) Console.WriteLine($"[Iter {i}] Chance node, sampled and backpropagated");
+                    if (_opt.Verbose && i <= 2) Console.WriteLine($"[Iter {i}] Chance node, sampled and backpropagated");
                     continue;
                 }
 
@@ -325,7 +326,7 @@ namespace GenericMcts
                     var kind = Classify(s2);
                     nodeForPlayout = leaf.AddChild(s2, kind, action);
 
-                    if (i <= 5)
+                    if (_opt.Verbose && i <= 5)
                     {
                         Console.WriteLine($"[Iter {i}] Expanded action={action}, newNode.Kind={kind}");
                         Console.WriteLine($"[Iter {i}] After expansion: Leaf.Children={leaf.Children.Count}, Leaf.Untried={leaf.Untried.Count}");
@@ -340,7 +341,7 @@ namespace GenericMcts
                 }
                 else
                 {
-                    if (i <= 2)
+                    if (_opt.Verbose && i <= 2)
                     {
                         Console.WriteLine($"[Iter {i}] No untried actions, calling SelectChild on leaf with {leaf.Children.Count} children");
                     }

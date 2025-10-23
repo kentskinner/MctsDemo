@@ -6,7 +6,7 @@ Console.WriteLine("=== TinyQuest MCTS Demo ===");
 Console.WriteLine("A cooperative hex-based adventure\n");
 
 var game = new TinyQuestGame();
-var selection = new ProgressiveBiasSelection(exitHex: 4, explorationC: 1.414, biasStrength: 2.0);
+var selection = new Ucb1Selection<QuestState, QuestAction>(explorationC: 1.414); // No bias for test
 var expansion = new UniformSingleExpansion<QuestState, QuestAction>(deterministicRollForward: true);
 var simulation = new UniformRandomSimulation<QuestState, QuestAction>();
 var backprop = new SumBackpropagation<QuestState, QuestAction>();
@@ -21,18 +21,21 @@ var options = new MctsOptions
 
 var mcts = new Mcts<QuestState, QuestAction>(game, selection, expansion, simulation, backprop, options);
 
-// Generate random map layout
-var random = new Random(42); // Use seed for reproducibility
-var (startHex, exitHex, chest0Hex, chest1Hex, chest2Hex) = GenerateRandomMap(random);
+// Simple test map: Hero at 8, Chest at 3, Exit at 4
+// Path: 8 -> 3 (chest) -> 4 (exit) = collect chest + exit
+// vs:   8 -> 9 -> 4 (exit) = just exit
+var startHex = 8;
+var exitHex = 4;
+var chest0Hex = 3;
+var chest1Hex = 15; // Far away
+var chest2Hex = 25; // Far away
 
-// Initial state: 
-// - All heroes start on randomly chosen start hex
-// - Exit and 3 chests placed randomly (chests never on exit hex)
+// Initial state: Only Warrior active for simple test
 var initialState = new QuestState(
     Warrior: new Hero(HeroType.Warrior, CurrentHex: startHex, HasExited: false, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false),
-    Elf: new Hero(HeroType.Elf, CurrentHex: startHex, HasExited: false, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false),
-    Thief: new Hero(HeroType.Thief, CurrentHex: startHex, HasExited: false, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false),
-    Mage: new Hero(HeroType.Mage, CurrentHex: startHex, HasExited: false, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false),
+    Elf: new Hero(HeroType.Elf, CurrentHex: 29, HasExited: true, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false), // Already exited
+    Thief: new Hero(HeroType.Thief, CurrentHex: 29, HasExited: true, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false), // Already exited
+    Mage: new Hero(HeroType.Mage, CurrentHex: 29, HasExited: true, IsDead: false, IsInjured: false, HasMoved: false, HasItem1: false, HasItem2: false, HasItem3: false), // Already exited
     ActiveHeroIndex: -1, // Hero selection mode
     ActionsRemaining: 0,
     ExitHex: exitHex,
@@ -51,13 +54,13 @@ var initialState = new QuestState(
     PendingChestItem: false
 );
 
-Console.WriteLine("=== Random Map Setup ===");
-Console.WriteLine($"Hex {startHex}: START (all heroes begin here)");
+Console.WriteLine("=== TEST MAP: Warrior at 8, Chest at 3, Exit at 4 ===");
+Console.WriteLine($"Hex {startHex}: START (Warrior begins here)");
 Console.WriteLine($"Hex {exitHex}: EXIT (escape here for reward)");
-Console.WriteLine($"Hex {chest0Hex}: Chest 0");
-Console.WriteLine($"Hex {chest1Hex}: Chest 1");
-Console.WriteLine($"Hex {chest2Hex}: Chest 2");
-Console.WriteLine("\nChests give hero-specific items when opened (or nothing if hero has all 3 items)\n");
+Console.WriteLine($"Hex {chest0Hex}: Chest 0 (between warrior and exit!)");
+Console.WriteLine($"\nOptimal: 8->3 (grab chest)->4 (exit) = 1.0 (exit) + 0.5 (item) = 1.5");
+Console.WriteLine($"Suboptimal: 8->9->4 (exit) = 1.0 (exit only)");
+Console.WriteLine($"\nLet's see what MCTS chooses...\n");
 
 Console.WriteLine("=== Initial State ===");
 PrintState(initialState);
@@ -294,10 +297,10 @@ const int MaxSteps = 500; // Safety limit to prevent infinite loops
 // Store map data for display
 var mapData = (exitHex, chest0Hex, chest1Hex, chest2Hex);
 
-// Use much fewer iterations for the simulation (it's called on every step!)
+// Use fewer iterations for the simulation (it's called on every step!)
 var simOptions = new MctsOptions
 {
-    Iterations = 100,  // Much less than the initial 10,000
+    Iterations = 1000,  // Increased for better planning
     RolloutDepth = 100,
     FinalActionSelector = NodeStats.SelectByMaxVisit,
     Seed = 42
@@ -436,25 +439,38 @@ class ProgressiveBiasSelection : ISelectionPolicy<QuestState, QuestAction>
     {
         if (node.Children.Count == 0) throw new InvalidOperationException("No children to select.");
 
-        double lnN = Math.Log(Math.Max(1, node.Visits));
+        const int VisitThreshold = 10; // Below this, select purely on heuristic
+
         Node<QuestState, QuestAction>? best = null;
         double bestScore = double.NegativeInfinity;
 
         foreach (var child in node.Children)
         {
-            // Standard UCB1
+            // Always prioritize unvisited nodes
             if (child.Visits == 0)
             {
-                return child; // Prioritize unvisited nodes
+                return child;
             }
 
-            double q = child.TotalValue / child.Visits;
-            double u = _c * Math.Sqrt(lnN / child.Visits);
-            double ucb = q + u;
+            double score;
 
-            // Add progressive bias: decreases as visits increase
-            double bias = GetHeuristicBias(node.State, child.IncomingAction!) / (1.0 + child.Visits);
-            double score = ucb + bias;
+            // Below threshold: select purely on heuristic (strong guidance)
+            if (child.Visits < VisitThreshold)
+            {
+                score = GetHeuristicBias(node.State, child.IncomingAction!);
+            }
+            // Above threshold: use UCB1 + progressive bias
+            else
+            {
+                double lnN = Math.Log(Math.Max(1, node.Visits));
+                double q = child.TotalValue / child.Visits;
+                double u = _c * Math.Sqrt(lnN / child.Visits);
+                double ucb = q + u;
+
+                // Progressive bias decreases with visits
+                double bias = GetHeuristicBias(node.State, child.IncomingAction!) / (1.0 + child.Visits);
+                score = ucb + bias;
+            }
 
             if (score > bestScore)
             {
@@ -465,11 +481,11 @@ class ProgressiveBiasSelection : ISelectionPolicy<QuestState, QuestAction>
 
         return best!;
     }
-
     private double GetHeuristicBias(QuestState state, QuestAction action)
     {
-        // Only bias movement actions toward the exit
         string actionStr = action.ToString();
+
+        // Don't bias non-movement actions - let MCTS learn their value from rewards
         if (!actionStr.StartsWith("MoveTo")) return 0;
 
         // Get which hero is moving
@@ -488,11 +504,46 @@ class ProgressiveBiasSelection : ISelectionPolicy<QuestState, QuestAction>
         // Parse target hex from action
         int targetHex = int.Parse(actionStr.Replace("MoveToHex", ""));
 
-        // Calculate Manhattan distances on 5x6 grid
-        int currentDist = ManhattanDistance(currentHex, _exitHex);
-        int targetDist = ManhattanDistance(targetHex, _exitHex);
+        // Find nearest unopened chest
+        int nearestChestHex = -1;
+        int nearestChestDist = int.MaxValue;
 
-        // Reward moves that get closer to the exit
+        if (state.Chest0Present)
+        {
+            int dist = ManhattanDistance(currentHex, state.Chest0Hex);
+            if (dist < nearestChestDist)
+            {
+                nearestChestDist = dist;
+                nearestChestHex = state.Chest0Hex;
+            }
+        }
+        if (state.Chest1Present)
+        {
+            int dist = ManhattanDistance(currentHex, state.Chest1Hex);
+            if (dist < nearestChestDist)
+            {
+                nearestChestDist = dist;
+                nearestChestHex = state.Chest1Hex;
+            }
+        }
+        if (state.Chest2Present)
+        {
+            int dist = ManhattanDistance(currentHex, state.Chest2Hex);
+            if (dist < nearestChestDist)
+            {
+                nearestChestDist = dist;
+                nearestChestHex = state.Chest2Hex;
+            }
+        }
+
+        // Strategy: Just head to the exit - let MCTS learn chest value from ItemReward
+        int goalHex = _exitHex;
+
+        // Calculate Manhattan distances to goal
+        int currentDist = ManhattanDistance(currentHex, goalHex);
+        int targetDist = ManhattanDistance(targetHex, goalHex);
+
+        // Reward moves that get closer to the goal
         if (targetDist < currentDist)
             return _biasStrength;  // Moving closer
         else if (targetDist == currentDist)
