@@ -123,8 +123,7 @@ Console.WriteLine("Running Dungeon Crawler with MCTS AI...\n");
 
 // Setup MCTS with progressive bias
 var selection = new ProgressiveBiasSelection<GameState, PlayerAction>(
-    game,
-    Heuristic,
+    heuristicFunc: Heuristic,
     visitThreshold: 50,
     biasStrength: 1.0,
     explorationConstant: 15.0  // Higher because rewards are larger (10s, 20s)
@@ -151,51 +150,55 @@ Console.WriteLine(game.StateToString(initialState));
 var currentState = initialState;
 var actionHistory = new List<(PlayerAction action, GameState resultState)>();
 
-while (!game.IsTerminal(currentState))
+while (!game.IsTerminal(in currentState, out _))
 {
-    var action = mcts.Search(currentState);
-    currentState = game.Step(currentState, action);
+    var searchResult = mcts.Search(currentState, out var rootNode);
+    var action = searchResult.action;
+    currentState = game.Step(in currentState, in action);
     actionHistory.Add((action, currentState));
     
     Console.WriteLine($"Turn {currentState.TurnCount}: {action}");
-    
-    // Show combat/search results
-    var room = currentState.Rooms[(currentState.PlayerX, currentState.PlayerY)];
-    if (action == PlayerAction.SearchRoom)
+
+    // Show combat/search results (need at least 2 entries in history to compare)
+    if (actionHistory.Count >= 2)
     {
-        if (currentState.Gold > actionHistory[^2].resultState.Gold)
-            Console.WriteLine("  *** Found treasure! (+10 gold) ***");
-        else if (currentState.Potions > actionHistory[^2].resultState.Potions)
-            Console.WriteLine("  *** Found potion! ***");
-        else if (room.MonsterHealth > 0)
-            Console.WriteLine("  *** Disturbed a monster! ***");
-        else
-            Console.WriteLine("  Found nothing.");
+        var room = currentState.Rooms[(currentState.PlayerX, currentState.PlayerY)];
+        if (action == PlayerAction.SearchRoom)
+        {
+            if (currentState.Gold > actionHistory[^2].resultState.Gold)
+                Console.WriteLine("  *** Found treasure! (+10 gold) ***");
+            else if (currentState.Potions > actionHistory[^2].resultState.Potions)
+                Console.WriteLine("  *** Found potion! ***");
+            else if (room.MonsterHealth > 0)
+                Console.WriteLine("  *** Disturbed a monster! ***");
+            else
+                Console.WriteLine("  Found nothing.");
+        }
+        else if (action == PlayerAction.FightMonster)
+        {
+            var prevMonsterHp = actionHistory[^2].resultState.Rooms[(currentState.PlayerX, currentState.PlayerY)].MonsterHealth;
+            var damage = prevMonsterHp - room.MonsterHealth;
+
+            if (damage == 3)
+                Console.WriteLine($"  *** CRITICAL HIT! Monster took {damage} damage! ***");
+            else if (damage == 2)
+                Console.WriteLine($"  Hit! Monster took {damage} damage!");
+            else if (damage == 0)
+                Console.WriteLine("  MISS! Monster counters for 1 damage!");
+
+            if (room.MonsterHealth == 0 && prevMonsterHp > 0)
+                Console.WriteLine("  *** MONSTER DEFEATED! ***");
+        }
+        else if (action == PlayerAction.UsePotion)
+        {
+            Console.WriteLine("  Used potion - restored 5 HP!");
+        }
+        else if (action == PlayerAction.Exit)
+        {
+            Console.WriteLine("  *** ESCAPED THE DUNGEON! ***");
+        }
     }
-    else if (action == PlayerAction.FightMonster)
-    {
-        var prevMonsterHp = actionHistory[^2].resultState.Rooms[(currentState.PlayerX, currentState.PlayerY)].MonsterHealth;
-        var damage = prevMonsterHp - room.MonsterHealth;
-        
-        if (damage == 3)
-            Console.WriteLine($"  *** CRITICAL HIT! Monster took {damage} damage! ***");
-        else if (damage == 2)
-            Console.WriteLine($"  Hit! Monster took {damage} damage!");
-        else if (damage == 0)
-            Console.WriteLine("  MISS! Monster counters for 1 damage!");
-        
-        if (room.MonsterHealth == 0 && prevMonsterHp > 0)
-            Console.WriteLine("  *** MONSTER DEFEATED! ***");
-    }
-    else if (action == PlayerAction.UsePotion)
-    {
-        Console.WriteLine("  Used potion - restored 5 HP!");
-    }
-    else if (action == PlayerAction.Exit)
-    {
-        Console.WriteLine("  *** ESCAPED THE DUNGEON! ***");
-    }
-    
+
     Console.WriteLine(game.StateToString(currentState));
 }
 
@@ -207,80 +210,3 @@ Console.WriteLine($"Gold Collected: {currentState.Gold}");
 Console.WriteLine($"Escaped: {currentState.HasExited}");
 Console.WriteLine($"Died: {currentState.PlayerHealth <= 0}");
 
-
-// Progressive bias selection policy class
-class ProgressiveBiasSelection<TState, TAction> : ISelectionPolicy<TState, TAction>
-    where TState : notnull
-    where TAction : notnull
-{
-    private readonly IGameModel<TState, TAction> _game;
-    private readonly Func<TState, TAction, double> _heuristic;
-    private readonly int _visitThreshold;
-    private readonly double _biasStrength;
-    private readonly double _explorationConstant;
-
-    public ProgressiveBiasSelection(
-        IGameModel<TState, TAction> game,
-        Func<TState, TAction, double> heuristic,
-        int visitThreshold = 50,
-        double biasStrength = 1.0,
-        double explorationConstant = 1.414)
-    {
-        _game = game;
-        _heuristic = heuristic;
-        _visitThreshold = visitThreshold;
-        _biasStrength = biasStrength;
-        _explorationConstant = explorationConstant;
-    }
-
-    public Node<TState, TAction> SelectChild(Node<TState, TAction> node, Random rng)
-    {
-        if (node.Children.Count == 0)
-            throw new InvalidOperationException("No children to select.");
-
-        var state = node.State;
-        var totalVisits = node.Visits;
-        var logTotal = Math.Log(totalVisits);
-        
-        Node<TState, TAction>? bestChild = null;
-        double bestValue = double.NegativeInfinity;
-
-        foreach (var child in node.Children.Values)
-        {
-            var action = child.Action;
-            var visits = child.Visits;
-            
-            if (visits == 0)
-            {
-                // Unvisited - use pure heuristic
-                var heuristicValue = _heuristic(state, action);
-                if (heuristicValue > bestValue)
-                {
-                    bestValue = heuristicValue;
-                    bestChild = child;
-                }
-                continue;
-            }
-            
-            var value = child.TotalValue / visits;
-            
-            // UCB1 exploration term
-            var exploration = _explorationConstant * Math.Sqrt(logTotal / visits);
-            
-            // Progressive bias term - decays with visits
-            var progressiveBias = visits < _visitThreshold
-                ? _biasStrength * _heuristic(state, action) / (1 + visits)
-                : 0;
-            
-            var ucbValue = value + exploration + progressiveBias;
-            
-            if (ucbValue > bestValue)
-            {
-                bestValue = ucbValue;
-                bestChild = child;
-            }
-        }
-
-        return bestChild!;
-    }
-}
