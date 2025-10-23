@@ -143,10 +143,10 @@ var backprop = new SumBackpropagation<GameState, SquadAction>();
 
 var options = new MctsOptions
 {
-    Iterations = 500,     // Very low for testing while implementing chance nodes
+    Iterations = 500,     // Back to reasonable number
     RolloutDepth = 20,
     FinalActionSelector = NodeStats.SelectByMaxVisit,
-    Verbose = false
+    Verbose = false       // Turn off for normal play
 };
 
 var mcts = new Mcts<GameState, SquadAction>(game, selection, expansion, simulation, backprop, options);
@@ -215,11 +215,24 @@ while (!game.IsTerminal(in currentState, out var terminalValue))
     {
         var prevStateForChance = currentState;
         currentState = game.SampleChance(in currentState, Random.Shared, out var logProb);
-        
+
         // Print chance node outcomes
-        if (prevStateForChance.ChanceNodeType == MonsterPhase)
+        if (prevStateForChance.ChanceNodeType == MonsterSpawn)
         {
-            Console.WriteLine($"  *** Monster phase (logProb: {logProb:F2}) ***");
+            Console.WriteLine($"  *** Monster spawn phase (logProb: {logProb:F2}) ***");
+            if (currentState.Monsters.Length > prevStateForChance.Monsters.Length)
+            {
+                var newMonster = currentState.Monsters[currentState.Monsters.Length - 1];
+                Console.WriteLine($"  *** Monster spawned at ({newMonster.X},{newMonster.Y}) - {newMonster.Behavior} ***");
+            }
+            else
+            {
+                Console.WriteLine("  *** No monster spawned this turn ***");
+            }
+        }
+        else if (prevStateForChance.ChanceNodeType == MonsterPhase)
+        {
+            Console.WriteLine($"  *** Monster movement phase (logProb: {logProb:F2}) ***");
             if (currentState.Monsters.Length > 0)
                 Console.WriteLine($"  *** Monsters: {currentState.Monsters.Count(m => m.Health > 0)} alive ***");
             

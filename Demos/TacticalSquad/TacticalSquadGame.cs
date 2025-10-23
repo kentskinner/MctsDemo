@@ -31,6 +31,15 @@ public record Hero(
 );
 
 /// <summary>
+/// Monster AI behavior type
+/// </summary>
+public enum MonsterBehavior
+{
+    Random,   // Moves randomly
+    Hunter    // Moves toward nearest hero
+}
+
+/// <summary>
 /// Represents a monster's current state
 /// </summary>
 public record Monster(
@@ -39,7 +48,8 @@ public record Monster(
     int Y,
     int Health,
     int MaxHealth,
-    int Damage
+    int Damage,
+    MonsterBehavior Behavior
 );
 
 /// <summary>
@@ -78,7 +88,8 @@ public record GameState(
 public enum ChanceType
 {
     None,           // Not a chance node
-    MonsterPhase,   // Monster spawn/movement/attacks
+    MonsterSpawn,   // Monster spawn location choice
+    MonsterPhase,   // Monster movement/attacks (after spawn resolved)
     AttackOutcome   // Hero attack outcome (hit/miss/damage variation)
 }
 
@@ -111,8 +122,6 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
 
     public GameState InitialState()
     {
-        var rng = new Random(_seed);
-        
         // Create heroes with different classes and stats
         var heroes = new List<Hero>();
         var heroClasses = new[] { HeroClass.Warrior, HeroClass.Rogue, HeroClass.Mage };
@@ -292,8 +301,8 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
                     Monsters = newMonsters,
                     CurrentHeroIndex = 0,
                     TurnCount = newTurnCount,
-                    IsChance = true,  // Transition to chance node for monster phase
-                    ChanceNodeType = ChanceType.MonsterPhase
+                    IsChance = true,  // Transition to chance node for monster spawn
+                    ChanceNodeType = ChanceType.MonsterSpawn
                 };
             }
             
@@ -343,26 +352,6 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             hero with { X = newX, Y = newY });
     }
 
-    private (ImmutableArray<Hero>, ImmutableArray<Monster>) ProcessAttack(GameState state, Hero hero)
-    {
-        // Find adjacent monster
-        var monster = state.Monsters
-            .Where(m => m.Health > 0 &&
-                Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1)
-            .OrderBy(m => m.Health)  // Target weakest first
-            .FirstOrDefault();
-
-        if (monster == null)
-            return (state.Heroes, state.Monsters);
-
-        // Deal damage
-        int newHealth = monster.Health - hero.Damage;
-        var newMonsters = state.Monsters.SetItem(monster.Id,
-            monster with { Health = Math.Max(0, newHealth) });
-
-        return (state.Heroes, newMonsters);
-    }
-
     private ImmutableArray<Hero> ProcessMonsterAttacks(ImmutableArray<Hero> heroes, ImmutableArray<Monster> monsters)
     {
         var newHeroes = heroes;
@@ -392,10 +381,107 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
         return state.IsChance;
     }
 
-    public IEnumerable<(SquadAction action, double probability)> ChanceOutcomes(GameState state)
+    public IEnumerable<(GameState outcome, double probability)> ChanceOutcomes(GameState state)
     {
-        // Not used - we use SampleChance for stochastic outcomes
-        yield break;
+        if (!state.IsChance)
+            yield break;
+
+        if (state.ChanceNodeType == ChanceType.AttackOutcome)
+        {
+            // Enumerate all 3 attack outcomes
+            var hero = state.Heroes[state.CurrentHeroIndex];
+
+            // Find adjacent monster to attack
+            var monster = state.Monsters
+                .Where(m => m.Health > 0 &&
+                    Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1)
+                .OrderBy(m => m.Health)
+                .FirstOrDefault();
+
+            if (monster == null)
+            {
+                // No monster to attack - just return to decision state
+                yield return (state with { IsChance = false, ChanceNodeType = ChanceType.None }, 1.0);
+                yield break;
+            }
+
+            // Generate all three outcomes
+            yield return (ApplyAttackDamage(state, hero, monster, 0), 0.10);           // Miss
+            yield return (ApplyAttackDamage(state, hero, monster, hero.Damage), 0.70);  // Hit
+            yield return (ApplyAttackDamage(state, hero, monster, hero.Damage * 2), 0.20); // Crit
+        }
+        else if (state.ChanceNodeType == ChanceType.MonsterSpawn)
+        {
+            // Enumerate spawn locations (3 fixed locations + no spawn option)
+            var spawnLocations = GetSpawnLocations();
+
+            if (state.Monsters.Length >= 8)
+            {
+                // At cap - no spawn, transition to monster phase
+                yield return (state with
+                {
+                    IsChance = true,
+                    ChanceNodeType = ChanceType.MonsterPhase
+                }, 1.0);
+                yield break;
+            }
+
+            // Check which spawn locations are available
+            var availableLocations = spawnLocations
+                .Where(loc => !state.Heroes.Any(h => h.X == loc.X && h.Y == loc.Y) &&
+                             !state.Monsters.Any(m => m.X == loc.X && m.Y == loc.Y))
+                .ToList();
+
+            if (availableLocations.Count == 0)
+            {
+                // No valid spawn locations - transition to monster phase without spawning
+                yield return (state with
+                {
+                    IsChance = true,
+                    ChanceNodeType = ChanceType.MonsterPhase
+                }, 1.0);
+                yield break;
+            }
+
+            // Each available location has equal probability
+            double probPerLocation = 1.0 / (availableLocations.Count + 1);  // +1 for no-spawn option
+
+            // Option 1: Don't spawn (20% base chance, adjusted by available locations)
+            yield return (state with
+            {
+                IsChance = true,
+                ChanceNodeType = ChanceType.MonsterPhase
+            }, probPerLocation);
+
+            // Options 2-4: Spawn at each available location
+            foreach (var loc in availableLocations)
+            {
+                // Randomly choose between Hunter (60%) and Random (40%) behavior
+                var behavior = _seed % 2 == 0 ? MonsterBehavior.Hunter : MonsterBehavior.Random;
+
+                var newMonster = new Monster(
+                    Id: state.Monsters.Length,
+                    X: loc.X,
+                    Y: loc.Y,
+                    Health: 6,
+                    MaxHealth: 6,
+                    Damage: 2,
+                    Behavior: behavior
+                );
+
+                yield return (state with
+                {
+                    Monsters = state.Monsters.Add(newMonster),
+                    IsChance = true,
+                    ChanceNodeType = ChanceType.MonsterPhase
+                }, probPerLocation);
+            }
+        }
+        else
+        {
+            // Monster phase uses sampling (monster movement too complex to enumerate)
+            yield break;
+        }
     }
 
     public GameState SampleChance(in GameState state, Random rng, out double logProb)
@@ -408,34 +494,115 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
         
         return state.ChanceNodeType switch
         {
+            ChanceType.MonsterSpawn => SampleMonsterSpawn(state, rng, out logProb),
             ChanceType.MonsterPhase => SampleMonsterPhase(state, rng, out logProb),
             ChanceType.AttackOutcome => SampleAttackOutcome(state, rng, out logProb),
             _ => throw new InvalidOperationException($"Unknown chance type: {state.ChanceNodeType}")
         };
     }
-    
+
+    private List<(int X, int Y)> GetSpawnLocations()
+    {
+        // Fixed spawn locations in corners and center-ish
+        return new List<(int X, int Y)>
+        {
+            (1, 2),  // Top-left area
+            (5, 2),  // Top-right area  
+            (3, 5)   // Bottom-center area
+        };
+    }
+
+    private GameState SampleMonsterSpawn(GameState state, Random rng, out double logProb)
+    {
+        logProb = 0;
+
+        if (state.Monsters.Length >= 8)
+        {
+            // At cap - no spawn, transition to monster phase
+            return state with
+            {
+                IsChance = true,
+                ChanceNodeType = ChanceType.MonsterPhase
+            };
+        }
+
+        var spawnLocations = GetSpawnLocations();
+        var availableLocations = spawnLocations
+            .Where(loc => !state.Heroes.Any(h => h.X == loc.X && h.Y == loc.Y) &&
+                         !state.Monsters.Any(m => m.X == loc.X && m.Y == loc.Y))
+            .ToList();
+
+        if (availableLocations.Count == 0)
+        {
+            // No valid spawn locations
+            return state with
+            {
+                IsChance = true,
+                ChanceNodeType = ChanceType.MonsterPhase
+            };
+        }
+
+        // 20% chance to not spawn, 80% chance to spawn at a random available location
+        int choice = rng.Next(availableLocations.Count + 1);
+
+        if (choice == 0)
+        {
+            // Don't spawn
+            logProb = -Math.Log(availableLocations.Count + 1);
+            return state with
+            {
+                IsChance = true,
+                ChanceNodeType = ChanceType.MonsterPhase
+            };
+        }
+
+        // Spawn at chosen location
+        var loc = availableLocations[choice - 1];
+        logProb = -Math.Log(availableLocations.Count + 1);
+
+        // 60% hunter, 40% random
+        var behavior = rng.NextDouble() < 0.6 ? MonsterBehavior.Hunter : MonsterBehavior.Random;
+
+        var newMonster = new Monster(
+            Id: state.Monsters.Length,
+            X: loc.X,
+            Y: loc.Y,
+            Health: 6,
+            MaxHealth: 6,
+            Damage: 2,
+            Behavior: behavior
+        );
+
+        return state with
+        {
+            Monsters = state.Monsters.Add(newMonster),
+            IsChance = true,
+            ChanceNodeType = ChanceType.MonsterPhase
+        };
+    }
+
     private GameState SampleMonsterPhase(GameState state, Random rng, out double logProb)
     {
-        logProb = 0;  // We'll compute this as we go
-        
+        logProb = 0;  // Deterministic movement, no log prob needed
+
         var newMonsters = state.Monsters;
         var newHeroes = state.Heroes;
-        
-        // 1. Spawn a new monster (if under cap of 8)
-        if (newMonsters.Length < 8)
-        {
-            (newMonsters, double spawnLogProb) = SpawnMonster(state, newMonsters, rng);
-            logProb += spawnLogProb;
-        }
-        
-        // 2. Move each monster randomly
+
+        // Move each monster based on its behavior
         for (int i = 0; i < newMonsters.Length; i++)
         {
             var monster = newMonsters[i];
             if (monster.Health <= 0) continue;
-            
-            (newMonsters, double moveLogProb) = MoveMonster(state, newMonsters, i, rng);
-            logProb += moveLogProb;
+
+            if (monster.Behavior == MonsterBehavior.Hunter)
+            {
+                newMonsters = MoveMonsterTowardNearestHero(state, newMonsters, i);
+            }
+            else  // Random
+            {
+                (newMonsters, double moveLogProb) = MoveMonsterRandomly(state, newMonsters, i, rng);
+                logProb += moveLogProb;
+            }
         }
         
         // 3. Monsters attack adjacent heroes
@@ -450,7 +617,55 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             ChanceNodeType = ChanceType.None
         };
     }
-    
+
+    private GameState ApplyAttackDamage(GameState state, Hero hero, Monster monster, int damage)
+    {
+        var newHeroes = state.Heroes;
+        var newMonsters = state.Monsters;
+
+        // Apply damage to monster
+        int newHealth = monster.Health - damage;
+        newMonsters = state.Monsters.SetItem(monster.Id,
+            monster with { Health = Math.Max(0, newHealth) });
+
+        // Handle hero turn advancement
+        int actionsLeft = hero.ActionsRemaining;
+        int newHeroIndex = state.CurrentHeroIndex;
+        int newTurnCount = state.TurnCount;
+        bool isChance = false;
+        var chanceType = ChanceType.None;
+
+        if (actionsLeft <= 0)
+        {
+            newHeroIndex = (state.CurrentHeroIndex + 1) % state.Heroes.Length;
+
+            if (newHeroIndex == 0)
+            {
+                // New turn - transition to monster spawn
+                newTurnCount++;
+                newHeroes = newHeroes.SetItem(0, newHeroes[0] with { ActionsRemaining = 2 });
+                isChance = true;
+                chanceType = ChanceType.MonsterSpawn;
+            }
+            else
+            {
+                // Reset new hero's actions
+                newHeroes = newHeroes.SetItem(newHeroIndex,
+                    newHeroes[newHeroIndex] with { ActionsRemaining = 2 });
+            }
+        }
+
+        return state with
+        {
+            Heroes = newHeroes,
+            Monsters = newMonsters,
+            CurrentHeroIndex = newHeroIndex,
+            TurnCount = newTurnCount,
+            IsChance = isChance,
+            ChanceNodeType = chanceType
+        };
+    }
+
     private GameState SampleAttackOutcome(GameState state, Random rng, out double logProb)
     {
         var hero = state.Heroes[state.CurrentHeroIndex];
@@ -542,67 +757,82 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             ChanceNodeType = chanceType
         };
     }
-    
-    private (ImmutableArray<Monster>, double logProb) SpawnMonster(
+
+    private ImmutableArray<Monster> MoveMonsterTowardNearestHero(
         GameState state,
         ImmutableArray<Monster> monsters,
-        Random rng)
+        int monsterIndex)
     {
-        // Find valid spawn locations
-        var validLocations = new List<(int X, int Y)>();
-        
-        for (int x = 1; x < state.GridWidth - 1; x++)
+        var monster = monsters[monsterIndex];
+
+        // Find nearest living hero
+        var nearestHero = state.Heroes
+            .Where(h => h.Health > 0)
+            .OrderBy(h => Math.Abs(h.X - monster.X) + Math.Abs(h.Y - monster.Y))
+            .FirstOrDefault();
+
+        if (nearestHero == null)
+            return monsters;  // No living heroes, don't move
+
+        // Calculate direction toward hero
+        int dx = nearestHero.X - monster.X;
+        int dy = nearestHero.Y - monster.Y;
+
+        // Try to move in the direction that reduces distance the most
+        var possibleMoves = new List<(int X, int Y, int distance)>();
+
+        // Try all four directions
+        var directions = new[] { (0, -1), (0, 1), (1, 0), (-1, 0) };
+
+        foreach (var (dirX, dirY) in directions)
         {
-            for (int y = 2; y < state.GridHeight - 2; y++)
+            int newX = monster.X + dirX;
+            int newY = monster.Y + dirY;
+
+            if (newX >= 0 && newX < state.GridWidth &&
+                newY >= 0 && newY < state.GridHeight &&
+                !state.Walls.Contains((newX, newY)) &&
+                !monsters.Any(m => m.Id != monster.Id && m.X == newX && m.Y == newY))
             {
-                if (!state.Walls.Contains((x, y)) &&
-                    !state.Heroes.Any(h => h.X == x && h.Y == y) &&
-                    !monsters.Any(m => m.X == x && m.Y == y))
-                {
-                    validLocations.Add((x, y));
-                }
+                int distance = Math.Abs(nearestHero.X - newX) + Math.Abs(nearestHero.Y - newY);
+                possibleMoves.Add((newX, newY, distance));
             }
         }
-        
-        if (validLocations.Count == 0)
-        {
-            return (monsters, 0);  // No spawn, log prob = 0 (prob = 1)
-        }
-        
-        // Pick random location uniformly
-        int index = rng.Next(validLocations.Count);
-        var spawnLoc = validLocations[index];
-        double logProb = -Math.Log(validLocations.Count);  // Uniform distribution
-        
-        var newMonster = new Monster(
-            Id: monsters.Length,
-            X: spawnLoc.X,
-            Y: spawnLoc.Y,
-            Health: 6,
-            MaxHealth: 6,
-            Damage: 2
-        );
-        
-        return (monsters.Add(newMonster), logProb);
+
+        if (possibleMoves.Count == 0)
+            return monsters;  // Can't move, stay in place
+
+        // Pick the move that gets closest to the hero
+        var bestMove = possibleMoves.OrderBy(m => m.distance).First();
+
+        var updatedMonsters = monsters.SetItem(monsterIndex,
+            monster with { X = bestMove.X, Y = bestMove.Y });
+
+        return updatedMonsters;
     }
-    
-    private (ImmutableArray<Monster>, double logProb) MoveMonster(
+
+    private (ImmutableArray<Monster>, double logProb) MoveMonsterRandomly(
         GameState state,
         ImmutableArray<Monster> monsters,
         int monsterIndex,
         Random rng)
     {
         var monster = monsters[monsterIndex];
+
+        // Find all valid moves (including staying in place)
         var possibleMoves = new List<(int X, int Y)>();
-        
+
+        // Add current position (can stay in place)
+        possibleMoves.Add((monster.X, monster.Y));
+
         // Try all four directions
         var directions = new[] { (0, -1), (0, 1), (1, 0), (-1, 0) };
-        
-        foreach (var (dx, dy) in directions)
+
+        foreach (var (dirX, dirY) in directions)
         {
-            int newX = monster.X + dx;
-            int newY = monster.Y + dy;
-            
+            int newX = monster.X + dirX;
+            int newY = monster.Y + dirY;
+
             if (newX >= 0 && newX < state.GridWidth &&
                 newY >= 0 && newY < state.GridHeight &&
                 !state.Walls.Contains((newX, newY)) &&
@@ -611,18 +841,15 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
                 possibleMoves.Add((newX, newY));
             }
         }
-        
-        // Can also stay in place
-        possibleMoves.Add((monster.X, monster.Y));
-        
-        // Pick random move uniformly
+
+        // Pick a random move uniformly
         int index = rng.Next(possibleMoves.Count);
         var move = possibleMoves[index];
         double logProb = -Math.Log(possibleMoves.Count);
-        
+
         var updatedMonsters = monsters.SetItem(monsterIndex,
             monster with { X = move.X, Y = move.Y });
-        
+
         return (updatedMonsters, logProb);
     }
 

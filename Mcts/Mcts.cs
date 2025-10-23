@@ -26,11 +26,24 @@ namespace Mcts;
         /// <summary>True if this node is a chance node (random event to sample rather than choose).</summary>
         bool IsChanceNode(in TState state);
 
-        /// <summary>
-        /// Sample one random outcome for a chance node and return the next state.
-        /// Return also the log-probability if you want to use it (not required by default).
-        /// </summary>
-        TState SampleChance(in TState state, Random rng, out double logProb);
+    /// <summary>
+    /// Optional: Enumerate all possible outcomes for a chance node with their probabilities.
+    /// If this returns any outcomes, MCTS will expand all of them as children (like decision nodes).
+    /// If this returns empty, MCTS will fall back to SampleChance (sampling approach).
+    /// This is efficient for small outcome spaces (e.g., 3 attack outcomes, 4 spawn locations).
+    /// </summary>
+    IEnumerable<(TState outcome, double probability)> ChanceOutcomes(TState state)
+    {
+        // Default implementation: no enumeration, use sampling instead
+        yield break;
+    }
+
+    /// <summary>
+    /// Sample one random outcome for a chance node and return the next state.
+    /// Return also the log-probability if you want to use it (not required by default).
+    /// Used when ChanceOutcomes returns empty (sampling approach for large outcome spaces).
+    /// </summary>
+    TState SampleChance(in TState state, Random rng, out double logProb);
 
         /// <summary>Enumerate legal actions at a decision node.</summary>
         IEnumerable<TAction> LegalActions(TState state);
@@ -190,24 +203,26 @@ namespace Mcts;
         public readonly NodeKind Kind;
         public readonly Node<TState, TAction>? Parent;
         public readonly TAction? IncomingAction;
-        public readonly List<Node<TState, TAction>> Children = new();
+    public readonly double Probability;  // For chance node children: the probability of this outcome
+    public readonly List<Node<TState, TAction>> Children = new();
         public readonly List<TAction> Untried = new();
 
         public int Visits;
         public double TotalValue;
 
-        public Node(TState state, NodeKind kind, Node<TState, TAction>? parent, TAction? incomingAction)
-        {
+    public Node(TState state, NodeKind kind, Node<TState, TAction>? parent, TAction? incomingAction, double probability = 1.0)
+    {
             State = state;
             Kind = kind;
             Parent = parent;
             IncomingAction = incomingAction;
-        }
+        Probability = probability;
+    }
 
-        public Node<TState, TAction> AddChild(TState childState, NodeKind kind, TAction incoming)
-        {
-            var ch = new Node<TState, TAction>(childState, kind, this, incoming);
-            Children.Add(ch);
+    public Node<TState, TAction> AddChild(TState childState, NodeKind kind, TAction incoming, double probability = 1.0)
+    {
+        var ch = new Node<TState, TAction>(childState, kind, this, incoming, probability);
+        Children.Add(ch);
             return ch;
         }
     }
@@ -304,17 +319,75 @@ namespace Mcts;
                     continue;
                 }
 
-                // 3) Chance node: sample (no expansion)
-                if (leaf.Kind == NodeKind.Chance)
+            // 3) Chance node: try enumeration first, fall back to sampling
+            if (leaf.Kind == NodeKind.Chance)
                 {
+                // Try to enumerate outcomes
+                var outcomes = _game.ChanceOutcomes(leaf.State).ToList();
+
+                if (outcomes.Count > 0)
+                {
+                    // Enumerable chance node - expand all outcomes like we do for actions
+                    if (leaf.Children.Count == 0)
+                    {
+                        // First visit: expand all outcomes as children
+                        foreach (var (outcome, probability) in outcomes)
+                        {
+                            var rolled = RollForwardIfEnabled(outcome);
+                            var kind = Classify(rolled);
+                            var child = leaf.AddChild(rolled, kind, default!, probability);
+
+                            if (child.Kind == NodeKind.Decision)
+                                child.Untried.AddRange(_game.LegalActions(child.State));
+
+                            if (_opt.Verbose && i <= 10)
+                                Console.WriteLine($"[Iter {i}] Enumerated chance outcome: prob={probability:F3}, kind={kind}");
+                        }
+                    }
+
+                    // Now select one child based on exploration strategy
+                    // For now, use simple proportional selection weighted by probability
+                    Node<TState, TAction> selectedChild;
+                    if (leaf.Children.All(ch => ch.Visits == 0))
+                    {
+                        // First selection: choose proportional to probability
+                        var r = _rng.NextDouble();
+                        var cumulative = 0.0;
+                        selectedChild = leaf.Children[0];
+                        foreach (var child in leaf.Children)
+                        {
+                            cumulative += child.Probability;
+                            if (r < cumulative)
+                            {
+                                selectedChild = child;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Use selection policy (UCB will balance exploration)
+                        selectedChild = _selection.SelectChild(leaf, _rng);
+                    }
+
+                    var v = SimulateFrom(selectedChild.State);
+                    _backprop.Backpropagate(selectedChild, v);
+
+                    if (_opt.Verbose && i <= 10)
+                        Console.WriteLine($"[Iter {i}] Enumerated chance node, selected child with prob={selectedChild.Probability:F3}");
+                }
+                else
+                {
+                    // Not enumerable - fall back to sampling
                     var s2 = _game.SampleChance(leaf.State, _rng, out _);
                     var rolled = RollForwardIfEnabled(s2);
                     var kind = Classify(rolled);
                     var ch = AttachIfNeeded(leaf, rolled, kind, default!);
                     var v = SimulateFrom(ch.State);
                     _backprop.Backpropagate(ch, v);
-                    if (_opt.Verbose && i <= 2) Console.WriteLine($"[Iter {i}] Chance node, sampled and backpropagated");
-                    continue;
+                    if (_opt.Verbose && i <= 10) Console.WriteLine($"[Iter {i}] Sampled chance node, backpropagated");
+                }
+                continue;
                 }
 
                 // 4) Expansion (Decision node): expand one untried action if any; otherwise select among children
