@@ -4,21 +4,21 @@ using System.IO;
 using System.Linq;
 using System.Text;
 
-namespace GenericMcts
+namespace Mcts;
+
+/// <summary>
+/// Utilities for visualizing MCTS tree structures
+/// </summary>
+public static class MctsTreeVisualizer
 {
     /// <summary>
-    /// Utilities for visualizing MCTS tree structures
+    /// Export tree to DOT format (Graphviz)
     /// </summary>
-    public static class MctsTreeVisualizer
-    {
-        /// <summary>
-        /// Export tree to DOT format (Graphviz)
-        /// </summary>
-        public static string ToDot<TState, TAction>(
-            Node<TState, TAction> root,
-            Func<TState, string> stateFormatter,
-            Func<TAction?, string> actionFormatter,
-            int maxDepth = 3,
+    public static string ToDot<TState, TAction>(
+        Node<TState, TAction> root,
+        Func<TState, string> stateFormatter,
+        Func<TAction?, string> actionFormatter,
+        int maxDepth = 3,
             int minVisits = 1)
         {
             var sb = new StringBuilder();
@@ -205,4 +205,4 @@ namespace GenericMcts
             return $"Nodes: {TotalNodes}, Leaves: {LeafNodes}, Visits: {TotalVisits}, MaxDepth: {MaxDepth}";
         }
     }
-}
+

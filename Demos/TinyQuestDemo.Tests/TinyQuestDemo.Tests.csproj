@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TinyQuestDemo\TinyQuestDemo.csproj" />
+    <ProjectReference Include="..\..\Mcts\Mcts.csproj" />
   </ItemGroup>
 
 </Project>

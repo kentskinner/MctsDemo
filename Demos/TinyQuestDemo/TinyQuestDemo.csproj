@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\GenericMctsDemo\GenericMctsDemo.csproj" />
+    <ProjectReference Include="..\..\Mcts\Mcts.csproj" />
   </ItemGroup>
 
 </Project>

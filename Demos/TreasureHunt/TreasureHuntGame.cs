@@ -1,10 +1,10 @@
-using GenericMcts;
+using Mcts;
 
-namespace ObstacleHunt;
+namespace TreasureHunt;
 
 /// <summary>
-/// Grid-based treasure hunt game with obstacles.
-/// Character starts at position, must reach exit within N turns while avoiding obstacles.
+/// Simple grid-based treasure hunt game.
+/// Character starts at position, must reach exit within N turns.
 /// Can collect treasure along the way for bonus points.
 /// </summary>
 public enum GameAction
@@ -29,25 +29,22 @@ public readonly record struct GameState(
     int TurnCount        // Number of turns taken
 );
 
-public class ObstacleHuntGame : IGameModel<GameState, GameAction>
+public class TreasureHuntGame : IGameModel<GameState, GameAction>
 {
     public int GridWidth { get; }
     public int GridHeight { get; }
     public int MaxTurns { get; }
     public double TreasureReward { get; }
     public double ExitReward { get; }
-    public HashSet<(int X, int Y)> Obstacles { get; }
 
-    public ObstacleHuntGame(int gridWidth = 5, int gridHeight = 5, int maxTurns = 20, 
-        double treasureReward = 2.0, double exitReward = 1.0,
-        HashSet<(int X, int Y)>? obstacles = null)
+    public TreasureHuntGame(int gridWidth = 5, int gridHeight = 5, int maxTurns = 10, 
+        double treasureReward = 0.5, double exitReward = 1.0)
     {
         GridWidth = gridWidth;
         GridHeight = gridHeight;
         MaxTurns = maxTurns;
         TreasureReward = treasureReward;
         ExitReward = exitReward;
-        Obstacles = obstacles ?? new HashSet<(int X, int Y)>();
     }
 
     public bool IsTerminal(in GameState state, out double terminalValue)
@@ -83,28 +80,23 @@ public class ObstacleHuntGame : IGameModel<GameState, GameAction>
         return state;
     }
 
-    private bool IsBlocked(int x, int y)
-    {
-        return Obstacles.Contains((x, y));
-    }
-
     public IEnumerable<GameAction> LegalActions(GameState state)
     {
         // Can't take actions if already exited or out of turns
         if (state.HasExited || state.TurnCount >= MaxTurns)
             yield break;
 
-        // Movement actions (only if within bounds and not blocked)
-        if (state.CharacterY > 0 && !IsBlocked(state.CharacterX, state.CharacterY - 1))
+        // Movement actions (only if within bounds)
+        if (state.CharacterY > 0)
             yield return GameAction.MoveNorth;
         
-        if (state.CharacterY < GridHeight - 1 && !IsBlocked(state.CharacterX, state.CharacterY + 1))
+        if (state.CharacterY < GridHeight - 1)
             yield return GameAction.MoveSouth;
         
-        if (state.CharacterX < GridWidth - 1 && !IsBlocked(state.CharacterX + 1, state.CharacterY))
+        if (state.CharacterX < GridWidth - 1)
             yield return GameAction.MoveEast;
         
-        if (state.CharacterX > 0 && !IsBlocked(state.CharacterX - 1, state.CharacterY))
+        if (state.CharacterX > 0)
             yield return GameAction.MoveWest;
 
         // Pickup treasure (only if at treasure location and haven't picked it up yet)

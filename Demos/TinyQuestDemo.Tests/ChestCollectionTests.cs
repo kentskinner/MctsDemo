@@ -1,6 +1,6 @@
 using Xunit;
 using Xunit.Abstractions;
-using GenericMcts;
+using Mcts;
 using TinyQuestDemo;
 
 namespace TinyQuestDemo.Tests;

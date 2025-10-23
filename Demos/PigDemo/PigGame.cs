@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using GenericMcts;
+using Mcts;
 
 namespace PigDemo
 {

@@ -7,13 +7,13 @@ using System.Linq;
 // + A small "Pig Dice" game wired in (has CHANCE nodes)
 // =============================================================
 
-namespace GenericMcts
-{
-    // ----------------------------
-    // Core game/model abstractions
-    // ----------------------------
+namespace Mcts;
 
-    /// <summary>
+// ----------------------------
+// Core game/model abstractions
+// ----------------------------
+
+/// <summary>
     /// Game adapter the MCTS engine talks to. Keep values from the ROOT player's perspective.
     /// If your game alternates players, you should embed that in TState and make Evaluate/terminal
     /// return value from the root's perspective (e.g., negate when it's the opponent to move).
@@ -460,4 +460,4 @@ namespace GenericMcts
         private double SimulateFrom(in TState state) => _simulation.Simulate(state, _game, _rng, _opt.RolloutDepth);
         private double ValueOf(in TState state) => _game.IsTerminal(state, out var v) ? v : 0.0;
     }
-}
+

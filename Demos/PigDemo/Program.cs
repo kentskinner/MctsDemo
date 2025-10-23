@@ -1,5 +1,5 @@
 using System;
-using GenericMcts;
+using Mcts;
 using PigDemo;
 
 var game = new PigGame(targetScore: 20);

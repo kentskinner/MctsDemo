@@ -1,5 +1,5 @@
 using System;
-using GenericMcts;
+using Mcts;
 using TinyQuestDemo;
 
 Console.WriteLine("=== TinyQuest MCTS Demo ===");
