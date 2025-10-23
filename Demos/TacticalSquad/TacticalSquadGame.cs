@@ -1,0 +1,674 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using Mcts;
+
+namespace TacticalSquad;
+
+/// <summary>
+/// Hero classes with different stats and abilities
+/// </summary>
+public enum HeroClass
+{
+    Warrior,    // High HP, high damage, low speed
+    Rogue,      // Medium HP, medium damage, high speed
+    Mage        // Low HP, high damage, medium speed
+}
+
+/// <summary>
+/// Represents a hero's current state
+/// </summary>
+public record Hero(
+    int Id,
+    HeroClass Class,
+    int X,
+    int Y,
+    int Health,
+    int MaxHealth,
+    int Damage,
+    int ActionsRemaining  // Each hero gets 2 actions per turn
+);
+
+/// <summary>
+/// Represents a monster's current state
+/// </summary>
+public record Monster(
+    int Id,
+    int X,
+    int Y,
+    int Health,
+    int MaxHealth,
+    int Damage
+);
+
+/// <summary>
+/// Player actions in the tactical squad game
+/// </summary>
+public enum SquadAction
+{
+    MoveNorth,
+    MoveSouth,
+    MoveEast,
+    MoveWest,
+    Attack,      // Attack adjacent monster
+    EndTurn      // End current hero's turn early
+}
+
+/// <summary>
+/// Game state for tactical squad game
+/// </summary>
+public record GameState(
+    int GridWidth,
+    int GridHeight,
+    ImmutableArray<Hero> Heroes,
+    ImmutableArray<Monster> Monsters,
+    ImmutableHashSet<(int X, int Y)> Walls,
+    int ExitX,
+    int ExitY,
+    int CurrentHeroIndex,  // Which hero is currently acting
+    int TurnCount,
+    bool IsChance,  // True when at turn boundary or after attack
+    ChanceType ChanceNodeType  // What kind of chance event is pending
+);
+
+/// <summary>
+/// Type of chance event
+/// </summary>
+public enum ChanceType
+{
+    None,           // Not a chance node
+    MonsterPhase,   // Monster spawn/movement/attacks
+    AttackOutcome   // Hero attack outcome (hit/miss/damage variation)
+}
+
+/// <summary>
+/// Tactical squad game where n heroes with different stats take turns.
+/// Each hero gets 2 actions before the next hero acts.
+/// Heroes must defeat monsters and reach the exit.
+/// </summary>
+public class TacticalSquadGame : IGameModel<GameState, SquadAction>
+{
+    private readonly int _gridWidth;
+    private readonly int _gridHeight;
+    private readonly int _numHeroes;
+    private readonly int _maxTurns;
+    private readonly int _seed;
+
+    public TacticalSquadGame(
+        int gridWidth = 10,
+        int gridHeight = 10,
+        int numHeroes = 3,
+        int maxTurns = 50,
+        int? seed = null)
+    {
+        _gridWidth = gridWidth;
+        _gridHeight = gridHeight;
+        _numHeroes = numHeroes;
+        _maxTurns = maxTurns;
+        _seed = seed ?? Random.Shared.Next();
+    }
+
+    public GameState InitialState()
+    {
+        var rng = new Random(_seed);
+        
+        // Create heroes with different classes and stats
+        var heroes = new List<Hero>();
+        var heroClasses = new[] { HeroClass.Warrior, HeroClass.Rogue, HeroClass.Mage };
+        
+        for (int i = 0; i < _numHeroes; i++)
+        {
+            var heroClass = heroClasses[i % heroClasses.Length];
+            var (maxHp, damage) = heroClass switch
+            {
+                HeroClass.Warrior => (15, 4),
+                HeroClass.Rogue => (10, 3),
+                HeroClass.Mage => (8, 5),
+                _ => (10, 3)
+            };
+
+            heroes.Add(new Hero(
+                Id: i,
+                Class: heroClass,
+                X: 1 + i,  // Start heroes in a row
+                Y: _gridHeight - 2,
+                Health: maxHp,
+                MaxHealth: maxHp,
+                Damage: damage,
+                ActionsRemaining: 2
+            ));
+        }
+
+        // Create walls - simple pattern with corridors
+        var walls = new HashSet<(int X, int Y)>();
+        
+        // Add some horizontal walls with gaps
+        for (int x = 0; x < _gridWidth; x++)
+        {
+            // Top horizontal wall with gap in middle
+            if (x != _gridWidth / 2 && x != _gridWidth / 2 + 1)
+                walls.Add((x, 2));
+            
+            // Middle horizontal wall with gaps
+            if (x < 2 || x > _gridWidth - 3)
+                walls.Add((x, _gridHeight / 2));
+        }
+        
+        // Add some vertical walls
+        for (int y = 3; y < _gridHeight - 2; y++)
+        {
+            // Left vertical wall with gaps
+            if (y != _gridHeight / 2 && y != _gridHeight / 2 + 1)
+                walls.Add((2, y));
+            
+            // Right vertical wall with gaps
+            if (y != _gridHeight / 2 - 1 && y != _gridHeight / 2)
+            {
+                int wallX = _gridWidth - 3;
+                walls.Add((wallX, y));
+            }
+        }
+
+        // Create monsters - start with none, they spawn each turn!
+        var monsters = new List<Monster>();
+
+        return new GameState(
+            GridWidth: _gridWidth,
+            GridHeight: _gridHeight,
+            Heroes: heroes.ToImmutableArray(),
+            Monsters: monsters.ToImmutableArray(),
+            Walls: walls.ToImmutableHashSet(),
+            ExitX: _gridWidth / 2,
+            ExitY: 0,
+            CurrentHeroIndex: 0,
+            TurnCount: 0,
+            IsChance: false,
+            ChanceNodeType: ChanceType.None
+        );
+    }
+
+    public IEnumerable<SquadAction> LegalActions(GameState state)
+    {
+        if (IsTerminal(in state, out _))
+            yield break;
+
+        var hero = state.Heroes[state.CurrentHeroIndex];
+        
+        if (hero.Health <= 0)
+        {
+            // Dead heroes can only end turn
+            yield return SquadAction.EndTurn;
+            yield break;
+        }
+
+        // Movement actions
+        if (hero.Y > 0)
+            yield return SquadAction.MoveNorth;
+        if (hero.Y < state.GridHeight - 1)
+            yield return SquadAction.MoveSouth;
+        if (hero.X < state.GridWidth - 1)
+            yield return SquadAction.MoveEast;
+        if (hero.X > 0)
+            yield return SquadAction.MoveWest;
+
+        // Attack action if there's an adjacent monster
+        if (HasAdjacentMonster(state, hero))
+            yield return SquadAction.Attack;
+
+        // Can always end turn early
+        yield return SquadAction.EndTurn;
+    }
+
+    private bool HasAdjacentMonster(GameState state, Hero hero)
+    {
+        return state.Monsters.Any(m => m.Health > 0 &&
+            Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1);
+    }
+
+    public GameState Step(in GameState state, in SquadAction action)
+    {
+        // Should not call Step on a chance node
+        if (state.IsChance)
+            throw new InvalidOperationException("Cannot call Step on a chance node. Use SampleChance instead.");
+        
+        var hero = state.Heroes[state.CurrentHeroIndex];
+        var newHeroes = state.Heroes;
+        var newMonsters = state.Monsters;
+        int newHeroIndex = state.CurrentHeroIndex;
+        int newTurnCount = state.TurnCount;
+
+        // Process action
+        switch (action)
+        {
+            case SquadAction.MoveNorth:
+            case SquadAction.MoveSouth:
+            case SquadAction.MoveEast:
+            case SquadAction.MoveWest:
+                newHeroes = MoveHero(state, hero, action);
+                break;
+
+            case SquadAction.Attack:
+                // Attack creates a chance node - don't resolve it here
+                // Just consume the action and transition to attack chance node
+                newHeroes = newHeroes.SetItem(state.CurrentHeroIndex,
+                    newHeroes[state.CurrentHeroIndex] with { ActionsRemaining = hero.ActionsRemaining - 1 });
+                
+                return state with
+                {
+                    Heroes = newHeroes,
+                    IsChance = true,
+                    ChanceNodeType = ChanceType.AttackOutcome
+                };
+
+            case SquadAction.EndTurn:
+                // Just consume remaining actions
+                break;
+        }
+
+        // Consume one action
+        int actionsLeft = action == SquadAction.EndTurn ? 0 : hero.ActionsRemaining - 1;
+        
+        // Update hero's actions remaining
+        newHeroes = newHeroes.SetItem(state.CurrentHeroIndex,
+            newHeroes[state.CurrentHeroIndex] with { ActionsRemaining = actionsLeft });
+
+        // If hero is out of actions, move to next hero
+        if (actionsLeft <= 0)
+        {
+            newHeroIndex = (state.CurrentHeroIndex + 1) % state.Heroes.Length;
+            
+            // If we've cycled back to first hero, it's a new turn - transition to chance node
+            if (newHeroIndex == 0)
+            {
+                newTurnCount++;
+                
+                // Reset first hero's actions
+                newHeroes = newHeroes.SetItem(0, newHeroes[0] with { ActionsRemaining = 2 });
+                
+                return state with
+                {
+                    Heroes = newHeroes,
+                    Monsters = newMonsters,
+                    CurrentHeroIndex = 0,
+                    TurnCount = newTurnCount,
+                    IsChance = true,  // Transition to chance node for monster phase
+                    ChanceNodeType = ChanceType.MonsterPhase
+                };
+            }
+            
+            // Reset new hero's actions
+            newHeroes = newHeroes.SetItem(newHeroIndex,
+                newHeroes[newHeroIndex] with { ActionsRemaining = 2 });
+        }
+
+        return state with
+        {
+            Heroes = newHeroes,
+            Monsters = newMonsters,
+            CurrentHeroIndex = newHeroIndex,
+            TurnCount = newTurnCount,
+            IsChance = false,
+            ChanceNodeType = ChanceType.None
+        };
+    }
+
+    private ImmutableArray<Hero> MoveHero(GameState state, Hero hero, SquadAction action)
+    {
+        int newX = hero.X;
+        int newY = hero.Y;
+
+        switch (action)
+        {
+            case SquadAction.MoveNorth: newY--; break;
+            case SquadAction.MoveSouth: newY++; break;
+            case SquadAction.MoveEast: newX++; break;
+            case SquadAction.MoveWest: newX--; break;
+        }
+
+        // Check bounds
+        if (newX < 0 || newX >= state.GridWidth || newY < 0 || newY >= state.GridHeight)
+            return state.Heroes;
+
+        // Don't move into walls
+        if (state.Walls.Contains((newX, newY)))
+            return state.Heroes;
+
+        // Don't move into another hero
+        if (state.Heroes.Any(h => h.Id != hero.Id && h.X == newX && h.Y == newY))
+            return state.Heroes;
+
+        // Update hero position
+        return state.Heroes.SetItem(state.CurrentHeroIndex,
+            hero with { X = newX, Y = newY });
+    }
+
+    private (ImmutableArray<Hero>, ImmutableArray<Monster>) ProcessAttack(GameState state, Hero hero)
+    {
+        // Find adjacent monster
+        var monster = state.Monsters
+            .Where(m => m.Health > 0 &&
+                Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1)
+            .OrderBy(m => m.Health)  // Target weakest first
+            .FirstOrDefault();
+
+        if (monster == null)
+            return (state.Heroes, state.Monsters);
+
+        // Deal damage
+        int newHealth = monster.Health - hero.Damage;
+        var newMonsters = state.Monsters.SetItem(monster.Id,
+            monster with { Health = Math.Max(0, newHealth) });
+
+        return (state.Heroes, newMonsters);
+    }
+
+    private ImmutableArray<Hero> ProcessMonsterAttacks(ImmutableArray<Hero> heroes, ImmutableArray<Monster> monsters)
+    {
+        var newHeroes = heroes;
+
+        foreach (var monster in monsters.Where(m => m.Health > 0))
+        {
+            // Find adjacent hero
+            var targetHero = newHeroes
+                .Where(h => h.Health > 0 &&
+                    Math.Abs(h.X - monster.X) + Math.Abs(h.Y - monster.Y) == 1)
+                .OrderBy(h => h.Health)  // Target weakest
+                .FirstOrDefault();
+
+            if (targetHero != null)
+            {
+                int newHealth = targetHero.Health - monster.Damage;
+                newHeroes = newHeroes.SetItem(targetHero.Id,
+                    targetHero with { Health = Math.Max(0, newHealth) });
+            }
+        }
+
+        return newHeroes;
+    }
+
+    public bool IsChanceNode(in GameState state)
+    {
+        return state.IsChance;
+    }
+
+    public IEnumerable<(SquadAction action, double probability)> ChanceOutcomes(GameState state)
+    {
+        // Not used - we use SampleChance for stochastic outcomes
+        yield break;
+    }
+
+    public GameState SampleChance(in GameState state, Random rng, out double logProb)
+    {
+        if (!state.IsChance)
+        {
+            logProb = 0;
+            return state;
+        }
+        
+        return state.ChanceNodeType switch
+        {
+            ChanceType.MonsterPhase => SampleMonsterPhase(state, rng, out logProb),
+            ChanceType.AttackOutcome => SampleAttackOutcome(state, rng, out logProb),
+            _ => throw new InvalidOperationException($"Unknown chance type: {state.ChanceNodeType}")
+        };
+    }
+    
+    private GameState SampleMonsterPhase(GameState state, Random rng, out double logProb)
+    {
+        logProb = 0;  // We'll compute this as we go
+        
+        var newMonsters = state.Monsters;
+        var newHeroes = state.Heroes;
+        
+        // 1. Spawn a new monster (if under cap of 8)
+        if (newMonsters.Length < 8)
+        {
+            (newMonsters, double spawnLogProb) = SpawnMonster(state, newMonsters, rng);
+            logProb += spawnLogProb;
+        }
+        
+        // 2. Move each monster randomly
+        for (int i = 0; i < newMonsters.Length; i++)
+        {
+            var monster = newMonsters[i];
+            if (monster.Health <= 0) continue;
+            
+            (newMonsters, double moveLogProb) = MoveMonster(state, newMonsters, i, rng);
+            logProb += moveLogProb;
+        }
+        
+        // 3. Monsters attack adjacent heroes
+        newHeroes = ProcessMonsterAttacks(newHeroes, newMonsters);
+        
+        // Transition back to decision node
+        return state with
+        {
+            Heroes = newHeroes,
+            Monsters = newMonsters,
+            IsChance = false,
+            ChanceNodeType = ChanceType.None
+        };
+    }
+    
+    private GameState SampleAttackOutcome(GameState state, Random rng, out double logProb)
+    {
+        var hero = state.Heroes[state.CurrentHeroIndex];
+        var newHeroes = state.Heroes;
+        var newMonsters = state.Monsters;
+        
+        // Find adjacent monster to attack
+        var monster = state.Monsters
+            .Where(m => m.Health > 0 &&
+                Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1)
+            .OrderBy(m => m.Health)  // Target weakest first
+            .FirstOrDefault();
+
+        if (monster == null)
+        {
+            // No monster to attack - this shouldn't happen but handle gracefully
+            logProb = 0;
+            return state with
+            {
+                IsChance = false,
+                ChanceNodeType = ChanceType.None
+            };
+        }
+
+        // Attack resolution with chance:
+        // - 10% miss (0 damage)
+        // - 70% normal hit (base damage)
+        // - 20% critical hit (2x damage)
+        
+        double roll = rng.NextDouble();
+        int damage;
+        
+        if (roll < 0.10)  // Miss
+        {
+            damage = 0;
+            logProb = Math.Log(0.10);
+        }
+        else if (roll < 0.80)  // Normal hit (10% to 80% = 70%)
+        {
+            damage = hero.Damage;
+            logProb = Math.Log(0.70);
+        }
+        else  // Critical hit (80% to 100% = 20%)
+        {
+            damage = hero.Damage * 2;
+            logProb = Math.Log(0.20);
+        }
+        
+        // Apply damage
+        int newHealth = monster.Health - damage;
+        newMonsters = state.Monsters.SetItem(monster.Id,
+            monster with { Health = Math.Max(0, newHealth) });
+
+        // The attack action was already consumed in Step(), so check current ActionsRemaining
+        int actionsLeft = hero.ActionsRemaining;  // Already reduced by Step()
+        int newHeroIndex = state.CurrentHeroIndex;
+        int newTurnCount = state.TurnCount;
+        bool isChance = false;
+        var chanceType = ChanceType.None;
+
+        // If hero is out of actions after this attack, move to next hero
+        if (actionsLeft <= 0)
+        {
+            newHeroIndex = (state.CurrentHeroIndex + 1) % state.Heroes.Length;
+            
+            // If we've cycled back to first hero, it's a new turn - transition to monster phase
+            if (newHeroIndex == 0)
+            {
+                newTurnCount++;
+                newHeroes = newHeroes.SetItem(0, newHeroes[0] with { ActionsRemaining = 2 });
+                isChance = true;
+                chanceType = ChanceType.MonsterPhase;
+            }
+            else
+            {
+                // Reset new hero's actions
+                newHeroes = newHeroes.SetItem(newHeroIndex,
+                    newHeroes[newHeroIndex] with { ActionsRemaining = 2 });
+            }
+        }
+
+        return state with
+        {
+            Heroes = newHeroes,
+            Monsters = newMonsters,
+            CurrentHeroIndex = newHeroIndex,
+            TurnCount = newTurnCount,
+            IsChance = isChance,
+            ChanceNodeType = chanceType
+        };
+    }
+    
+    private (ImmutableArray<Monster>, double logProb) SpawnMonster(
+        GameState state,
+        ImmutableArray<Monster> monsters,
+        Random rng)
+    {
+        // Find valid spawn locations
+        var validLocations = new List<(int X, int Y)>();
+        
+        for (int x = 1; x < state.GridWidth - 1; x++)
+        {
+            for (int y = 2; y < state.GridHeight - 2; y++)
+            {
+                if (!state.Walls.Contains((x, y)) &&
+                    !state.Heroes.Any(h => h.X == x && h.Y == y) &&
+                    !monsters.Any(m => m.X == x && m.Y == y))
+                {
+                    validLocations.Add((x, y));
+                }
+            }
+        }
+        
+        if (validLocations.Count == 0)
+        {
+            return (monsters, 0);  // No spawn, log prob = 0 (prob = 1)
+        }
+        
+        // Pick random location uniformly
+        int index = rng.Next(validLocations.Count);
+        var spawnLoc = validLocations[index];
+        double logProb = -Math.Log(validLocations.Count);  // Uniform distribution
+        
+        var newMonster = new Monster(
+            Id: monsters.Length,
+            X: spawnLoc.X,
+            Y: spawnLoc.Y,
+            Health: 6,
+            MaxHealth: 6,
+            Damage: 2
+        );
+        
+        return (monsters.Add(newMonster), logProb);
+    }
+    
+    private (ImmutableArray<Monster>, double logProb) MoveMonster(
+        GameState state,
+        ImmutableArray<Monster> monsters,
+        int monsterIndex,
+        Random rng)
+    {
+        var monster = monsters[monsterIndex];
+        var possibleMoves = new List<(int X, int Y)>();
+        
+        // Try all four directions
+        var directions = new[] { (0, -1), (0, 1), (1, 0), (-1, 0) };
+        
+        foreach (var (dx, dy) in directions)
+        {
+            int newX = monster.X + dx;
+            int newY = monster.Y + dy;
+            
+            if (newX >= 0 && newX < state.GridWidth &&
+                newY >= 0 && newY < state.GridHeight &&
+                !state.Walls.Contains((newX, newY)) &&
+                !monsters.Any(m => m.Id != monster.Id && m.X == newX && m.Y == newY))
+            {
+                possibleMoves.Add((newX, newY));
+            }
+        }
+        
+        // Can also stay in place
+        possibleMoves.Add((monster.X, monster.Y));
+        
+        // Pick random move uniformly
+        int index = rng.Next(possibleMoves.Count);
+        var move = possibleMoves[index];
+        double logProb = -Math.Log(possibleMoves.Count);
+        
+        var updatedMonsters = monsters.SetItem(monsterIndex,
+            monster with { X = move.X, Y = move.Y });
+        
+        return (updatedMonsters, logProb);
+    }
+
+    public bool IsTerminal(in GameState state, out double terminalValue)
+    {
+        // Lose if all heroes are dead
+        if (state.Heroes.All(h => h.Health <= 0))
+        {
+            terminalValue = -100;
+            return true;
+        }
+
+        // Lose if out of turns
+        if (state.TurnCount >= _maxTurns)
+        {
+            terminalValue = -50;
+            return true;
+        }
+
+        // Win if all living heroes reach the exit
+        int exitX = state.ExitX;
+        int exitY = state.ExitY;
+        var heroes = state.Heroes;
+        var monsters = state.Monsters;
+        
+        if (heroes.Where(h => h.Health > 0).All(h => h.X == exitX && h.Y == exitY))
+        {
+            int reward = 100;
+            
+            // Bonus for surviving heroes
+            reward += heroes.Count(h => h.Health > 0) * 20;
+            
+            // Bonus for total health remaining
+            reward += heroes.Sum(h => h.Health);
+            
+            // Bonus for defeating monsters
+            reward += monsters.Count(m => m.Health <= 0) * 10;
+            
+            // Penalty for turns used
+            reward -= state.TurnCount;
+
+            terminalValue = reward;
+            return true;
+        }
+
+        terminalValue = 0;
+        return false;
+    }
+}
