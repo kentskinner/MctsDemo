@@ -21,8 +21,8 @@ var mines = new HashSet<(int X, int Y)>
 var game = new MonsterMazeGame(
     gridWidth: 7, 
     gridHeight: 7, 
-    maxTurns: 40, 
-    treasureReward: 3.0,  // High reward to encourage collecting
+    maxTurns: 40,
+    treasureReward: 20.0,  // Extremely high reward to overcome risk aversion
     exitReward: 1.0,
     deathPenalty: -5.0,   // Strong penalty for dying
     obstacles: obstacles,
@@ -44,7 +44,8 @@ var initialState = new GameState(
     HasExited: false,
     IsDead: false,
     MonsterDead: false,
-    TurnCount: 0
+    TurnCount: 0,
+    RewardCollected: 0.0
 );
 
 Console.WriteLine("=== Game Setup ===");
@@ -61,22 +62,101 @@ Console.WriteLine($"Death Penalty: {game.DeathPenalty}");
 Console.WriteLine($"Optimal score: {game.ExitReward + game.TreasureReward} (exit + treasure)");
 Console.WriteLine($"TIP: You can lure the monster onto a mine to eliminate the threat!\n");
 
-// Setup MCTS
-var selection = new Ucb1Selection<GameState, GameAction>(explorationC: 1.414);
+// Heuristic function to guide MCTS
+double Heuristic(GameState state, GameAction action)
+{
+    // If dead, terrible
+    if (state.IsDead) return -10.0;
+
+    // Exit action bonus (state will have HasExited=true after taking Exit)
+    if (action == GameAction.Exit && state.HasExited)
+    {
+        return state.HasTreasure ? 25.0 : 10.0;  // Reduced to reasonable values
+    }
+
+    // If exited, good
+    if (state.HasExited)
+        return state.HasTreasure ? 10.0 : 5.0;
+
+    double value = 0;
+
+    // Penalize being on a mine
+    if (mines.Contains((state.PlayerX, state.PlayerY)))
+        value -= 10.0;
+
+    // Penalize Wait action when monster is dead (should be moving!)
+    if (state.MonsterDead && action == GameAction.Wait)
+        value -= 5.0;
+
+    // Generally penalize Wait action (but less severely)
+    if (action == GameAction.Wait)
+        value -= 1.0;
+
+    // Reward for having treasure
+    if (state.HasTreasure)
+    {
+        value += 10.0;  // Moderate reward for having treasure
+
+        // When carrying treasure, prioritize reaching exit
+        int distToExit = Math.Abs(state.PlayerX - state.ExitX) + Math.Abs(state.PlayerY - state.ExitY);
+        value += 10.0 / (1.0 + distToExit);  // Distance-based guidance to exit
+    }
+    else
+    {
+        // Don't have treasure yet - prioritize getting it
+        int distToTreasure = Math.Abs(state.PlayerX - state.TreasureX) + Math.Abs(state.PlayerY - state.TreasureY);
+
+        if (state.MonsterDead)
+        {
+            // Monster is dead - treasure is priority
+            value += 8.0 / (1.0 + distToTreasure);
+        }
+        else
+        {
+            // Monster alive - still want treasure but be careful
+            value += 3.0 / (1.0 + distToTreasure);
+        }
+
+        // Also consider exit proximity but with lower weight
+        int distToExit = Math.Abs(state.PlayerX - state.ExitX) + Math.Abs(state.PlayerY - state.ExitY);
+        value += 0.5 / (1.0 + distToExit);
+    }
+
+    // Penalize being near the monster (if it's alive)
+    if (!state.MonsterDead)
+    {
+        int distToMonster = Math.Abs(state.PlayerX - state.MonsterX) + Math.Abs(state.PlayerY - state.MonsterY);
+        if (distToMonster < 3)
+            value -= 2.0 / (1.0 + distToMonster);
+    }
+
+    return value;
+}
+
+Console.WriteLine("Running MonsterMaze with MCTS AI...\n");
+
+// Setup MCTS with progressive bias
+var selection = new ProgressiveBiasSelection(
+    heuristicFunc: Heuristic,
+    visitThreshold: 50,
+    biasStrength: 1.0,
+    explorationC: 10.0  // Increased to match reward scale (treasure=20, exit=1)
+);
 var expansion = new UniformSingleExpansion<GameState, GameAction>(deterministicRollForward: true);
 var simulation = new UniformRandomSimulation<GameState, GameAction>();
 var backprop = new SumBackpropagation<GameState, GameAction>();
 
 var options = new MctsOptions
 {
-    Iterations = 50000,
+    Iterations = 75000,
     RolloutDepth = 40,
     FinalActionSelector = NodeStats.SelectByMaxVisit,
-    Seed = 42,
+    Seed = null,  // Random seed for testing robustness
     Verbose = false
 };
 
 var mcts = new Mcts<GameState, GameAction>(game, selection, expansion, simulation, backprop, options);
+
 
 // Run simulation
 Console.WriteLine("=== Running MCTS Simulation ===\n");
@@ -157,4 +237,71 @@ void DisplayGrid(GameState state, MonsterMazeGame g)
         Console.WriteLine("|");
     }
     Console.WriteLine("  +--------------+\n");
+}
+
+// Custom selection policy using progressive bias
+class ProgressiveBiasSelection : ISelectionPolicy<GameState, GameAction>
+{
+    private readonly Func<GameState, GameAction, double> heuristicFunc;
+    private readonly int visitThreshold;
+    private readonly double biasStrength;
+    private readonly double explorationC;
+
+    public ProgressiveBiasSelection(
+        Func<GameState, GameAction, double> heuristicFunc,
+        int visitThreshold = 30,
+        double biasStrength = 0.5,
+        double explorationC = 1.414)
+    {
+        this.heuristicFunc = heuristicFunc;
+        this.visitThreshold = visitThreshold;
+        this.biasStrength = biasStrength;
+        this.explorationC = explorationC;
+    }
+
+    public Node<GameState, GameAction> SelectChild(Node<GameState, GameAction> node, Random rng)
+    {
+        if (node.Children.Count == 0)
+            throw new InvalidOperationException("No children to select.");
+
+        // Find unvisited children first
+        foreach (var child in node.Children)
+        {
+            if (child.Visits == 0)
+                return child;
+        }
+
+        // Use progressive bias
+        double bestScore = double.NegativeInfinity;
+        Node<GameState, GameAction>? bestChild = null;
+
+        foreach (var child in node.Children)
+        {
+            double score;
+
+            if (child.Visits < visitThreshold)
+            {
+                // Below threshold: use pure heuristic
+                score = heuristicFunc(child.State, child.IncomingAction!);
+            }
+            else
+            {
+                // Above threshold: UCB1 + progressive bias
+                double exploitation = child.TotalValue / child.Visits;
+                double exploration = explorationC * Math.Sqrt(Math.Log(node.Visits) / child.Visits);
+                double heuristic = heuristicFunc(child.State, child.IncomingAction!);
+                double bias = biasStrength * heuristic / (1.0 + child.Visits);
+
+                score = exploitation + exploration + bias;
+            }
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestChild = child;
+            }
+        }
+
+        return bestChild ?? node.Children.First();
+    }
 }

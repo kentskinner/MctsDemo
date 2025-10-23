@@ -31,7 +31,8 @@ public readonly record struct GameState(
     bool HasExited,      // Has player exited?
     bool IsDead,         // Did player die (monster or mine)?
     bool MonsterDead,    // Did monster step on a mine?
-    int TurnCount        // Number of turns taken
+    int TurnCount,       // Number of turns taken
+    double RewardCollected  // Cumulative reward collected so far
 );
 
 public class MonsterMazeGame : IGameModel<GameState, GameAction>
@@ -67,24 +68,24 @@ public class MonsterMazeGame : IGameModel<GameState, GameAction>
 
     public bool IsTerminal(in GameState state, out double terminalValue)
     {
-        // Death - monster caught player or stepped on mine
+        // Death
         if (state.IsDead)
         {
-            terminalValue = DeathPenalty;
+            terminalValue = state.RewardCollected;
             return true;
         }
 
         // Victory - reached exit
         if (state.HasExited)
         {
-            terminalValue = ExitReward + (state.HasTreasure ? TreasureReward : 0);
+            terminalValue = state.RewardCollected;
             return true;
         }
 
         // Timeout
         if (state.TurnCount >= MaxTurns)
         {
-            terminalValue = state.HasTreasure ? TreasureReward : 0;
+            terminalValue = state.RewardCollected;  // Keep whatever rewards collected
             return true;
         }
 
@@ -257,6 +258,27 @@ public class MonsterMazeGame : IGameModel<GameState, GameAction>
             isDead = true;
         }
 
+        // Calculate immediate reward
+        double newReward = state.RewardCollected;
+
+        // Give treasure reward immediately when picked up
+        if (newHasTreasure && !state.HasTreasure)
+        {
+            newReward += TreasureReward;
+        }
+
+        // Give exit reward when exiting
+        if (newHasExited && !state.HasExited)
+        {
+            newReward += ExitReward;
+        }
+
+        // Apply death penalty
+        if (isDead && !state.IsDead)
+        {
+            newReward += DeathPenalty;
+        }
+
         return new GameState(
             PlayerX: newPlayerX,
             PlayerY: newPlayerY,
@@ -270,7 +292,8 @@ public class MonsterMazeGame : IGameModel<GameState, GameAction>
             HasExited: newHasExited,
             IsDead: isDead,
             MonsterDead: monsterDead,
-            TurnCount: newTurnCount
+            TurnCount: newTurnCount,
+            RewardCollected: newReward
         );
     }
 }
