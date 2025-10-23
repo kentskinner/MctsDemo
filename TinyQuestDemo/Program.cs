@@ -6,7 +6,7 @@ Console.WriteLine("=== TinyQuest MCTS Demo ===");
 Console.WriteLine("A cooperative hex-based adventure\n");
 
 var game = new TinyQuestGame();
-var selection = new Ucb1Selection<QuestState, QuestAction>(explorationC: 1.414);
+var selection = new ProgressiveBiasSelection(exitHex: 4, explorationC: 1.414, biasStrength: 2.0);
 var expansion = new UniformSingleExpansion<QuestState, QuestAction>(deterministicRollForward: true);
 var simulation = new UniformRandomSimulation<QuestState, QuestAction>();
 var backprop = new SumBackpropagation<QuestState, QuestAction>();
@@ -91,64 +91,198 @@ var treeText = MctsTreeVisualizer.ToText<QuestState, QuestAction>(
 Console.WriteLine("\n=== MCTS Tree (top branches, min 50 visits) ===");
 Console.WriteLine(treeText);
 
-// Save DOT file for Graphviz
-var dotContent = MctsTreeVisualizer.ToDot<QuestState, QuestAction>(
-    rootNode,
-    s => $"W:{s.Warrior.CurrentHex}{(s.Warrior.HasExited ? "X" : (s.Warrior.IsDead ? "D" : ""))} E:{s.Elf.CurrentHex}{(s.Elf.HasExited ? "X" : (s.Elf.IsDead ? "D" : ""))} T:{s.Thief.CurrentHex}{(s.Thief.HasExited ? "X" : (s.Thief.IsDead ? "D" : ""))} M:{s.Mage.CurrentHex}{(s.Mage.HasExited ? "X" : (s.Mage.IsDead ? "D" : ""))}\\nChests:{(s.Chest0Present ? "0" : "")}{(s.Chest1Present ? "1" : "")}{(s.Chest2Present ? "2" : "")} Turn:{s.TurnCount}",
-    a => a.ToString(),
-    maxDepth: 5,
-    minVisits: 50
-);
+// Graph generation disabled - using ASCII map instead
 
-File.WriteAllText("mcts_tree.dot", dotContent);
-Console.WriteLine("\nTree exported to mcts_tree.dot");
-
-// Try to generate PNG using Graphviz
-try
+// Helper function to display a single 5x6 hex grid (compact version for side-by-side)
+static List<string> GetMapLines(QuestState state, (int exitHex, int chest0Hex, int chest1Hex, int chest2Hex) mapData)
 {
-    var dotProcess = new System.Diagnostics.Process
+    const int Width = 5;
+    const int Height = 6;
+    var lines = new List<string>();
+
+    lines.Add("╔═══════════════════════════╗");
+    lines.Add("║      5x6 HEX GRID MAP     ║");
+    lines.Add("╠═══════════════════════════╣");
+
+    for (int row = 0; row < Height; row++)
     {
-        StartInfo = new System.Diagnostics.ProcessStartInfo
+        var line = "║  ";
+        for (int col = 0; col < Width; col++)
         {
-            FileName = "dot",
-            Arguments = "-Tpng mcts_tree.dot -o mcts_tree.png",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
+            int hex = row * Width + col;
+            string cell = GetCellDisplay(hex, state, mapData);
+            line += $"{cell} ";
         }
-    };
-    
-    dotProcess.Start();
-    dotProcess.WaitForExit();
-    
-    if (dotProcess.ExitCode == 0 && File.Exists("mcts_tree.png"))
+        line += "║";
+        lines.Add(line);
+    }
+
+    lines.Add("╚═══════════════════════════╝");
+    return lines;
+}
+
+// Display two maps side by side with action description in between
+static void DisplaySideBySide(QuestState beforeState, QuestState afterState, QuestAction action,
+    (int exitHex, int chest0Hex, int chest1Hex, int chest2Hex) mapData, int turnNum, int stepNum)
+{
+    var beforeLines = GetMapLines(beforeState, mapData);
+    var afterLines = GetMapLines(afterState, mapData);
+
+    // Create a friendly action description
+    string actionLine1 = "";
+    string actionLine2 = "";
+    string whatHappened = "";
+
+    string actionStr = action.ToString();
+    if (actionStr.StartsWith("Activate"))
     {
-        Console.WriteLine("PNG generated: mcts_tree.png");
-        
-        // Open the PNG
-        var openProcess = new System.Diagnostics.Process
+        // Activation actions - show which hero is being activated
+        string heroName = actionStr.Replace("Activate", "");
+        actionLine1 = "Selecting:";
+        actionLine2 = heroName;
+        whatHappened = $"The party selects {heroName} to take their turn (2 actions)";
+    }
+    else if (actionStr.StartsWith("MoveTo"))
+    {
+        // Movement actions - show which hero is moving
+        string heroName = beforeState.ActiveHeroIndex switch
         {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "mcts_tree.png",
-                UseShellExecute = true
-            }
+            0 => "Warrior",
+            1 => "Elf",
+            2 => "Thief",
+            3 => "Mage",
+            _ => "Unknown"
         };
-        openProcess.Start();
-        Console.WriteLine("Opening mcts_tree.png...");
+        int fromHex = GetHeroPosition(beforeState, beforeState.ActiveHeroIndex);
+        int toHex = int.Parse(actionStr.Replace("MoveToHex", ""));
+        actionLine1 = heroName;
+        actionLine2 = actionStr;
+        whatHappened = $"{heroName} moves from hex {fromHex} to hex {toHex}";
+    }
+    else if (actionStr == "EndActivation")
+    {
+        string heroName = beforeState.ActiveHeroIndex switch
+        {
+            0 => "Warrior",
+            1 => "Elf",
+            2 => "Thief",
+            3 => "Mage",
+            _ => "Unknown"
+        };
+        actionLine1 = heroName;
+        actionLine2 = "Ends Turn";
+        whatHappened = $"{heroName} ends their turn (no more actions or chose to end)";
+    }
+    else if (actionStr == "OpenChest")
+    {
+        string heroName = beforeState.ActiveHeroIndex switch
+        {
+            0 => "Warrior",
+            1 => "Elf",
+            2 => "Thief",
+            3 => "Mage",
+            _ => "Unknown"
+        };
+        actionLine1 = heroName;
+        actionLine2 = "Opens Chest!";
+        whatHappened = $"{heroName} opens a chest! Waiting for random item...";
+    }
+    else if (actionStr.StartsWith("GiveItem") || actionStr == "GiveNothing")
+    {
+        actionLine1 = "Chest:";
+        actionLine2 = actionStr;
+
+        string heroName = beforeState.ActiveHeroIndex switch
+        {
+            0 => "Warrior",
+            1 => "Elf",
+            2 => "Thief",
+            3 => "Mage",
+            _ => "Unknown"
+        };
+
+        if (actionStr == "GiveNothing")
+            whatHappened = $"Chest was empty or {heroName} already has all items";
+        else
+            whatHappened = $"{heroName} receives {actionStr.Replace("GiveItem", "Item")} from the chest!";
     }
     else
     {
-        var error = dotProcess.StandardError.ReadToEnd();
-        Console.WriteLine($"Failed to generate PNG: {error}");
-        Console.WriteLine("(Install Graphviz and add it to PATH to enable PNG generation)");
+        actionLine1 = actionStr;
+        actionLine2 = "";
+        whatHappened = actionStr;
     }
+
+    Console.WriteLine("\n" + new string('═', 100));
+    Console.WriteLine($"Turn {turnNum}, Step {stepNum}: {whatHappened}");
+    Console.WriteLine(new string('─', 100));
+
+    // Display maps side by side
+    for (int i = 0; i < beforeLines.Count; i++)
+    {
+        Console.Write(beforeLines[i]);
+
+        // In the middle rows, show the action
+        if (i == 3)
+            Console.Write("    ╔══════════════╗      ");
+        else if (i == 4)
+            Console.Write($"    ║ {actionLine1,-12} ║      ");
+        else if (i == 5)
+            Console.Write($"    ║ {actionLine2,-12} ║      ");
+        else if (i == 6)
+            Console.Write("    ╚══════════════╝      ");
+        else
+            Console.Write("                          ");
+
+        Console.WriteLine(afterLines[i]);
+    }
+
+    Console.WriteLine("     BEFORE                                              AFTER");
+    Console.WriteLine(new string('═', 100));
 }
-catch (Exception ex)
+
+static int GetHeroPosition(QuestState state, int heroIndex)
 {
-    Console.WriteLine($"Could not generate PNG: {ex.Message}");
-    Console.WriteLine("(Install Graphviz from https://graphviz.org/download/ and add to PATH)");
+    return heroIndex switch
+    {
+        0 => state.Warrior.CurrentHex,
+        1 => state.Elf.CurrentHex,
+        2 => state.Thief.CurrentHex,
+        3 => state.Mage.CurrentHex,
+        _ => -1
+    };
+}
+
+static string GetCellDisplay(int hex, QuestState state, (int exitHex, int chest0Hex, int chest1Hex, int chest2Hex) mapData)
+{
+    var heroes = new List<string>();
+
+    // Check each hero's position
+    if (!state.Warrior.HasExited && !state.Warrior.IsDead && state.Warrior.CurrentHex == hex)
+        heroes.Add("W");
+    if (!state.Elf.HasExited && !state.Elf.IsDead && state.Elf.CurrentHex == hex)
+        heroes.Add("E");
+    if (!state.Thief.HasExited && !state.Thief.IsDead && state.Thief.CurrentHex == hex)
+        heroes.Add("T");
+    if (!state.Mage.HasExited && !state.Mage.IsDead && state.Mage.CurrentHex == hex)
+        heroes.Add("M");
+
+    // If heroes present, show them
+    if (heroes.Count > 0)
+        return string.Join("", heroes).PadRight(4);
+
+    // Show special locations
+    if (hex == mapData.exitHex)
+        return " X  ";
+    if (hex == mapData.chest0Hex)
+        return state.Chest0Present ? "C0  " : "[C0]";
+    if (hex == mapData.chest1Hex)
+        return state.Chest1Present ? "C1  " : "[C1]";
+    if (hex == mapData.chest2Hex)
+        return state.Chest2Present ? "C2  " : "[C2]";
+
+    // Empty hex - show hex number for reference
+    return $"{hex,2}  ";
 }
 
 // Simulate a complete game
@@ -156,6 +290,9 @@ Console.WriteLine("\n=== Simulating Complete Game ===\n");
 var currentState = initialState;
 int step = 1;
 const int MaxSteps = 500; // Safety limit to prevent infinite loops
+
+// Store map data for display
+var mapData = (exitHex, chest0Hex, chest1Hex, chest2Hex);
 
 // Use much fewer iterations for the simulation (it's called on every step!)
 var simOptions = new MctsOptions
@@ -169,33 +306,27 @@ var simMcts = new Mcts<QuestState, QuestAction>(game, selection, expansion, simu
 
 while (!game.IsTerminal(currentState, out var termValue) && step <= MaxSteps)
 {
-    string statusMsg;
-    if (currentState.ActiveHeroIndex == -1)
+    var beforeState = currentState;
+
+    // Check if we're at a chance node - if so, sample it directly instead of searching
+    if (game.IsChanceNode(currentState))
     {
-        statusMsg = "Hero Selection";
+        var rng = new Random();
+        currentState = game.SampleChance(currentState, rng, out var logProb);
+
+        // Display the chance resolution
+        DisplaySideBySide(beforeState, currentState, QuestAction.GiveNothing /* placeholder */, mapData, beforeState.TurnCount + 1, step);
+        PrintState(currentState);
+        step++;
+        continue;
     }
-    else
-    {
-        var activeHeroName = currentState.ActiveHeroIndex switch
-        {
-            0 => "Warrior",
-            1 => "Elf",
-            2 => "Thief",
-            3 => "Mage",
-            _ => "Unknown"
-        };
-        statusMsg = $"Active: {activeHeroName} (Actions: {currentState.ActionsRemaining})";
-    }
-    
-    Console.WriteLine($"--- Turn {currentState.TurnCount + 1}, Step {step++} ---");
-    Console.WriteLine($"{statusMsg}");
 
     var (action, _) = simMcts.Search(currentState);
-    Console.WriteLine($"Action: {action}");
-    
     currentState = game.Step(currentState, action);
+
+    DisplaySideBySide(beforeState, currentState, action, mapData, beforeState.TurnCount + 1, step);
     PrintState(currentState);
-    Console.WriteLine();
+    step++;
 }
 
 if (step > MaxSteps)
@@ -285,4 +416,96 @@ static (int startHex, int exitHex, int chest0Hex, int chest1Hex, int chest2Hex) 
     }
 
     return (startHex, exitHex, chestHexes[0], chestHexes[1], chestHexes[2]);
+}
+
+// Custom selection policy with progressive bias toward the exit
+class ProgressiveBiasSelection : ISelectionPolicy<QuestState, QuestAction>
+{
+    private readonly double _c;
+    private readonly int _exitHex;
+    private readonly double _biasStrength;
+
+    public ProgressiveBiasSelection(int exitHex, double explorationC = 1.414, double biasStrength = 2.0)
+    {
+        _c = explorationC;
+        _exitHex = exitHex;
+        _biasStrength = biasStrength;
+    }
+
+    public Node<QuestState, QuestAction> SelectChild(Node<QuestState, QuestAction> node, Random rng)
+    {
+        if (node.Children.Count == 0) throw new InvalidOperationException("No children to select.");
+
+        double lnN = Math.Log(Math.Max(1, node.Visits));
+        Node<QuestState, QuestAction>? best = null;
+        double bestScore = double.NegativeInfinity;
+
+        foreach (var child in node.Children)
+        {
+            // Standard UCB1
+            if (child.Visits == 0)
+            {
+                return child; // Prioritize unvisited nodes
+            }
+
+            double q = child.TotalValue / child.Visits;
+            double u = _c * Math.Sqrt(lnN / child.Visits);
+            double ucb = q + u;
+
+            // Add progressive bias: decreases as visits increase
+            double bias = GetHeuristicBias(node.State, child.IncomingAction!) / (1.0 + child.Visits);
+            double score = ucb + bias;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = child;
+            }
+        }
+
+        return best!;
+    }
+
+    private double GetHeuristicBias(QuestState state, QuestAction action)
+    {
+        // Only bias movement actions toward the exit
+        string actionStr = action.ToString();
+        if (!actionStr.StartsWith("MoveTo")) return 0;
+
+        // Get which hero is moving
+        int heroIndex = state.ActiveHeroIndex;
+        if (heroIndex < 0) return 0;
+
+        int currentHex = heroIndex switch
+        {
+            0 => state.Warrior.CurrentHex,
+            1 => state.Elf.CurrentHex,
+            2 => state.Thief.CurrentHex,
+            3 => state.Mage.CurrentHex,
+            _ => -1
+        };
+
+        // Parse target hex from action
+        int targetHex = int.Parse(actionStr.Replace("MoveToHex", ""));
+
+        // Calculate Manhattan distances on 5x6 grid
+        int currentDist = ManhattanDistance(currentHex, _exitHex);
+        int targetDist = ManhattanDistance(targetHex, _exitHex);
+
+        // Reward moves that get closer to the exit
+        if (targetDist < currentDist)
+            return _biasStrength;  // Moving closer
+        else if (targetDist == currentDist)
+            return 0.0;  // Sideways
+        else
+            return -_biasStrength / 2.0;  // Moving away (slight penalty)
+    }
+
+    private static int ManhattanDistance(int hex1, int hex2)
+    {
+        const int Width = 5;
+        int row1 = hex1 / Width, col1 = hex1 % Width;
+        int row2 = hex2 / Width, col2 = hex2 % Width;
+        return Math.Abs(row1 - row2) + Math.Abs(col1 - col2);
+    }
 }
