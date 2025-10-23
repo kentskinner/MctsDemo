@@ -3,12 +3,12 @@ using MonsterMaze;
 
 Console.WriteLine("=== Monster Maze MCTS Demo ===\n");
 
-// Create obstacles - walls forming a maze
+// Create obstacles - walls forming a maze (easier layout with clear path to exit)
 var obstacles = new HashSet<(int X, int Y)>
 {
-    // Vertical walls
-    (2, 1), (2, 2), (2, 3),
-    (4, 3), (4, 4), (4, 5),
+    // Scattered obstacles instead of blocking walls
+    (2, 2), (2, 5),
+    (5, 3), (5, 5),
 };
 
 // Create mines - dangerous spots
@@ -71,7 +71,7 @@ double Heuristic(GameState state, GameAction action)
     // Exit action bonus (state will have HasExited=true after taking Exit)
     if (action == GameAction.Exit && state.HasExited)
     {
-        return state.HasTreasure ? 25.0 : 10.0;  // Reduced to reasonable values
+        return state.HasTreasure ? 50.0 : 30.0;  // High enough to dominate other options
     }
 
     // If exited, good
@@ -136,11 +136,11 @@ double Heuristic(GameState state, GameAction action)
 Console.WriteLine("Running MonsterMaze with MCTS AI...\n");
 
 // Setup MCTS with progressive bias
-var selection = new ProgressiveBiasSelection(
+var selection = new ProgressiveBiasSelection<GameState, GameAction>(
     heuristicFunc: Heuristic,
     visitThreshold: 50,
     biasStrength: 1.0,
-    explorationC: 10.0  // Increased to match reward scale (treasure=20, exit=1)
+    explorationConstant: 10.0  // Increased to match reward scale (treasure=20, exit=1)
 );
 var expansion = new UniformSingleExpansion<GameState, GameAction>(deterministicRollForward: true);
 var simulation = new UniformRandomSimulation<GameState, GameAction>();
@@ -151,7 +151,7 @@ var options = new MctsOptions
     Iterations = 75000,
     RolloutDepth = 40,
     FinalActionSelector = NodeStats.SelectByMaxVisit,
-    Seed = null,  // Random seed for testing robustness
+    Seed = null,  // Random seed to test consistency
     Verbose = false
 };
 
@@ -237,71 +237,4 @@ void DisplayGrid(GameState state, MonsterMazeGame g)
         Console.WriteLine("|");
     }
     Console.WriteLine("  +--------------+\n");
-}
-
-// Custom selection policy using progressive bias
-class ProgressiveBiasSelection : ISelectionPolicy<GameState, GameAction>
-{
-    private readonly Func<GameState, GameAction, double> heuristicFunc;
-    private readonly int visitThreshold;
-    private readonly double biasStrength;
-    private readonly double explorationC;
-
-    public ProgressiveBiasSelection(
-        Func<GameState, GameAction, double> heuristicFunc,
-        int visitThreshold = 30,
-        double biasStrength = 0.5,
-        double explorationC = 1.414)
-    {
-        this.heuristicFunc = heuristicFunc;
-        this.visitThreshold = visitThreshold;
-        this.biasStrength = biasStrength;
-        this.explorationC = explorationC;
-    }
-
-    public Node<GameState, GameAction> SelectChild(Node<GameState, GameAction> node, Random rng)
-    {
-        if (node.Children.Count == 0)
-            throw new InvalidOperationException("No children to select.");
-
-        // Find unvisited children first
-        foreach (var child in node.Children)
-        {
-            if (child.Visits == 0)
-                return child;
-        }
-
-        // Use progressive bias
-        double bestScore = double.NegativeInfinity;
-        Node<GameState, GameAction>? bestChild = null;
-
-        foreach (var child in node.Children)
-        {
-            double score;
-
-            if (child.Visits < visitThreshold)
-            {
-                // Below threshold: use pure heuristic
-                score = heuristicFunc(child.State, child.IncomingAction!);
-            }
-            else
-            {
-                // Above threshold: UCB1 + progressive bias
-                double exploitation = child.TotalValue / child.Visits;
-                double exploration = explorationC * Math.Sqrt(Math.Log(node.Visits) / child.Visits);
-                double heuristic = heuristicFunc(child.State, child.IncomingAction!);
-                double bias = biasStrength * heuristic / (1.0 + child.Visits);
-
-                score = exploitation + exploration + bias;
-            }
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestChild = child;
-            }
-        }
-
-        return bestChild ?? node.Children.First();
-    }
 }
