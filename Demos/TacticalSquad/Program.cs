@@ -23,7 +23,7 @@ Console.WriteLine($"Grid: {initialState.GridWidth}x{initialState.GridHeight}");
 Console.WriteLine($"Heroes: {initialState.Heroes.Length}");
 foreach (var hero in initialState.Heroes)
 {
-    Console.WriteLine($"  Hero {hero.Id} ({hero.Class}): HP={hero.MaxHealth}, Damage={hero.Damage}, Start=({hero.X},{hero.Y})");
+    Console.WriteLine($"  Hero {hero.Id} ({hero.Class}): HP={hero.MaxHealth}, Damage={hero.Damage}, Range={hero.AttackRange}, Start=({hero.X},{hero.Y})");
 }
 Console.WriteLine($"Monsters: 0 (spawn 1 per turn!)");
 Console.WriteLine($"Exit: ({initialState.ExitX}, {initialState.ExitY})");
@@ -143,7 +143,7 @@ var backprop = new SumBackpropagation<GameState, SquadAction>();
 
 var options = new MctsOptions
 {
-    Iterations = 500,     // Back to reasonable number
+    Iterations = 100,     // Reduced for speed with complex chance node enumeration
     RolloutDepth = 20,
     FinalActionSelector = NodeStats.SelectByMaxVisit,
     Verbose = false       // Turn off for normal play
@@ -196,7 +196,8 @@ void PrintState(GameState state)
     {
         string status = hero.Health > 0 ? $"HP:{hero.Health}/{hero.MaxHealth}" : "DEAD";
         string actions = hero.Id == state.CurrentHeroIndex ? $" [{hero.ActionsRemaining} actions left]" : "";
-        Console.WriteLine($"    {hero.Id} ({hero.Class}): {status} at ({hero.X},{hero.Y}){actions}");
+        string attackInfo = $"Dmg:{hero.Damage} Range:{hero.AttackRange}";
+        Console.WriteLine($"    {hero.Id} ({hero.Class}): {status} {attackInfo} at ({hero.X},{hero.Y}){actions}");
     }
     
     // Print monster stats

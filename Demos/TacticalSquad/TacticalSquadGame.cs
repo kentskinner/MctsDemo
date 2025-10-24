@@ -27,6 +27,7 @@ public record Hero(
     int Health,
     int MaxHealth,
     int Damage,
+    int AttackRange,      // How far the hero can attack (1 for melee, 2+ for ranged)
     int ActionsRemaining  // Each hero gets 2 actions per turn
 );
 
@@ -129,12 +130,12 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
         for (int i = 0; i < _numHeroes; i++)
         {
             var heroClass = heroClasses[i % heroClasses.Length];
-            var (maxHp, damage) = heroClass switch
+            var (maxHp, damage, attackRange) = heroClass switch
             {
-                HeroClass.Warrior => (15, 4),
-                HeroClass.Rogue => (10, 3),
-                HeroClass.Mage => (8, 5),
-                _ => (10, 3)
+                HeroClass.Warrior => (15, 4, 1),  // Melee warrior
+                HeroClass.Rogue => (10, 3, 2),    // Rogue with bow - can attack at range 2
+                HeroClass.Mage => (8, 5, 2),      // Mage with spells - can attack at range 2
+                _ => (10, 3, 1)
             };
 
             heroes.Add(new Hero(
@@ -145,6 +146,7 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
                 Health: maxHp,
                 MaxHealth: maxHp,
                 Damage: damage,
+                AttackRange: attackRange,
                 ActionsRemaining: 2
             ));
         }
@@ -221,18 +223,18 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
         if (hero.X > 0)
             yield return SquadAction.MoveWest;
 
-        // Attack action if there's an adjacent monster
-        if (HasAdjacentMonster(state, hero))
+        // Attack action if there's a monster within attack range
+        if (HasMonsterInRange(state, hero))
             yield return SquadAction.Attack;
 
         // Can always end turn early
         yield return SquadAction.EndTurn;
     }
 
-    private bool HasAdjacentMonster(GameState state, Hero hero)
+    private bool HasMonsterInRange(GameState state, Hero hero)
     {
         return state.Monsters.Any(m => m.Health > 0 &&
-            Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1);
+            Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) <= hero.AttackRange);
     }
 
     public GameState Step(in GameState state, in SquadAction action)
@@ -391,11 +393,12 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             // Enumerate all 3 attack outcomes
             var hero = state.Heroes[state.CurrentHeroIndex];
 
-            // Find adjacent monster to attack
+            // Find closest monster within attack range (prefer closer targets)
             var monster = state.Monsters
                 .Where(m => m.Health > 0 &&
-                    Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) == 1)
-                .OrderBy(m => m.Health)
+                    Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) <= hero.AttackRange)
+                .OrderBy(m => Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y))  // Prefer closer
+                .ThenBy(m => m.Health)  // Then prefer weaker
                 .FirstOrDefault();
 
             if (monster == null)
