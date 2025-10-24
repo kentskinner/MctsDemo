@@ -303,7 +303,7 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
             return moves;
         }
 
-        // Get all valid adjacent positions
+        // Get all valid adjacent positions (can actually move to)
         var directions = new[] { (0, -1), (0, 1), (-1, 0), (1, 0) };
         foreach (var (dx, dy) in directions)
         {
@@ -316,14 +316,8 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
             moves.Add((newX, newY));
         }
 
-        if (moves.Count == 0)
-        {
-            moves.Add((monster.X, monster.Y)); // Stay in place
-            return moves;
-        }
-
         // Chaser monsters: prefer moves toward nearest hero
-        if (monster.Type == MonsterType.Chaser)
+        if (monster.Type == MonsterType.Chaser && moves.Count > 0)
         {
             var nearestHero = state.Heroes
                 .Where(h => h.Status != HeroStatus.Dead)
@@ -339,11 +333,17 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
                     .ToList();
 
                 if (betterMoves.Any())
-                    return betterMoves;
+                    moves = betterMoves;
             }
         }
 
-        // Random monsters or Chaser with no better move: return all valid moves
+        // Always include "stay in place" as an option for Random monsters
+        // This represents all invalid moves (walls, other monsters, etc.)
+        if (monster.Type == MonsterType.Random || moves.Count == 0)
+        {
+            moves.Add((monster.X, monster.Y));
+        }
+
         return moves;
     }
 
