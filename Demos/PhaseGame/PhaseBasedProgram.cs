@@ -12,12 +12,14 @@ public static class PhaseBasedProgram
         Console.WriteLine("Rules:");
         Console.WriteLine("  - Enemies die in one hit");
         Console.WriteLine("  - Heroes: Healthy -> Injured -> Dead (2 hits)");
-        Console.WriteLine("  - Phase 1: Monster spawns");
+        Console.WriteLine("  - Phase 1: Monster spawns (Random or Chaser)");
         Console.WriteLine("  - Phase 2: Heroes act");
         Console.WriteLine("  - Phase 3: Monsters act");
+        Console.WriteLine("  - Random monsters move randomly");
+        Console.WriteLine("  - Chaser monsters pursue nearest hero");
         Console.WriteLine();
 
-        var game = new PhaseBasedGame(gridWidth: 7, gridHeight: 7, numHeroes: 2, maxTurns: 30, seed: 42);
+        var game = new PhaseBasedGame(gridWidth: 5, gridHeight: 5, numHeroes: 2, maxTurns: 20, seed: 42);
         var state = game.InitialState();
 
         var simulation = new PhaseGameSimulation();
@@ -83,11 +85,11 @@ public static class PhaseBasedProgram
     private static void PrintState(PhaseBasedGame game, PhaseGameState state)
     {
         Console.WriteLine($"--- Turn {state.TurnCount} | Phase: {state.CurrentPhase} | ActiveHero: {state.ActiveHeroIndex} ---");
-        
-        // Print grid
-        for (int y = 0; y < 7; y++)
+
+        // Print grid (5x5)
+        for (int y = 0; y < 5; y++)
         {
-            for (int x = 0; x < 7; x++)
+            for (int x = 0; x < 5; x++)
             {
                 if (x == state.ExitX && y == state.ExitY)
                     Console.Write("E");
@@ -99,7 +101,10 @@ public static class PhaseBasedProgram
                     Console.Write(hero.Status == HeroStatus.Healthy ? "H" : "h");
                 }
                 else if (state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
-                    Console.Write("M");
+                {
+                    var monster = state.Monsters.First(m => m.IsAlive && m.X == x && m.Y == y);
+                    Console.Write(monster.Type == MonsterType.Random ? "R" : "C");
+                }
                 else
                     Console.Write(".");
             }

@@ -29,11 +29,14 @@ public record PhaseHero(
     int ActionsRemaining
 );
 
+public enum MonsterType { Random, Chaser }
+
 public record PhaseMonster(
     int Index,
     int X,
     int Y,
-    bool IsAlive
+    bool IsAlive,
+    MonsterType Type
 );
 
 /// <summary>
@@ -65,7 +68,7 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
     private readonly int _maxTurns;
     private readonly Random _setupRng;
 
-    public PhaseBasedGame(int gridWidth = 7, int gridHeight = 7, int numHeroes = 2, int maxTurns = 30, int? seed = null)
+    public PhaseBasedGame(int gridWidth = 5, int gridHeight = 5, int numHeroes = 2, int maxTurns = 20, int? seed = null)
     {
         _gridWidth = gridWidth;
         _gridHeight = gridHeight;
@@ -75,22 +78,19 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
 
     public PhaseGameState InitialState()
     {
-        // Create heroes
+        // Create heroes - start in top-left corner
         // Attack scores: Warrior=7 (58%), Rogue=8 (42%), Elf=9 (28%)
         var heroes = ImmutableList.Create(
-            new PhaseHero(0, HeroClass.Warrior, 1, 5, HeroStatus.Healthy, 7, 1, 2),
-            new PhaseHero(1, HeroClass.Rogue, 2, 5, HeroStatus.Healthy, 8, 2, 2),
-            new PhaseHero(2, HeroClass.Elf, 3, 5, HeroStatus.Healthy, 9, 3, 2)
+            new PhaseHero(0, HeroClass.Warrior, 0, 0, HeroStatus.Healthy, 7, 1, 2),
+            new PhaseHero(1, HeroClass.Rogue, 1, 0, HeroStatus.Healthy, 8, 2, 2),
+            new PhaseHero(2, HeroClass.Elf, 0, 1, HeroStatus.Healthy, 9, 3, 2)
         );
 
-        // Create walls
+        // Create walls - 5x5 grid with two paths to exit
+        // Layout creates a central obstacle that forces heroes to choose left or right path
         var walls = ImmutableHashSet.CreateRange(new[]
         {
-            (0, 2), (1, 2), (2, 2),
-            (0, 3), (1, 3),
-            (5, 2), (6, 2),
-            (5, 3), (6, 3),
-            (4, 4)
+            (2, 1), (2, 2), (2, 3)  // Central vertical wall with gaps at top and bottom
         });
 
         return new PhaseGameState(
@@ -99,8 +99,8 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
             TurnCount: 0,
             ActiveHeroIndex: -1,
             CurrentPhase: Phase.MonsterSpawn,
-            ExitX: 5,
-            ExitY: 5,
+            ExitX: 4,
+            ExitY: 4,
             AccumulatedReward: 0.0,
             Walls: walls,
             AttackResolution: null
@@ -169,35 +169,50 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
 
     private IEnumerable<(PhaseGameState, double)> EnumerateMonsterSpawnOutcomes(PhaseGameState state)
     {
-        // 50% chance to spawn, 50% chance no spawn
+        // 40% chance no spawn, 60% chance to spawn
         var noSpawn = state with 
         { 
             CurrentPhase = Phase.HeroAction,
             ActiveHeroIndex = GetNextActiveHeroIndex(state, -1)
         };
-        yield return (noSpawn, 0.5);
+        yield return (noSpawn, 0.4);
 
-        // 50% chance to spawn at a random valid location
+        // 60% chance to spawn at a random valid location
+        // Split between Random (60%) and Chaser (40%) types
         var validSpawnLocations = GetValidSpawnLocations(state).ToList();
         if (validSpawnLocations.Count > 0)
         {
-            double probPerLocation = 0.5 / validSpawnLocations.Count;
+            double probPerLocation = 0.6 / validSpawnLocations.Count;
+            double probRandom = probPerLocation * 0.6;  // 60% of spawns are Random
+            double probChaser = probPerLocation * 0.4;  // 40% of spawns are Chaser
+
             foreach (var (x, y) in validSpawnLocations)
             {
-                var newMonster = new PhaseMonster(state.Monsters.Count, x, y, true);
-                var spawnState = state with
+                // Random monster
+                var randomMonster = new PhaseMonster(state.Monsters.Count, x, y, true, MonsterType.Random);
+                var randomState = state with
                 {
-                    Monsters = state.Monsters.Add(newMonster),
+                    Monsters = state.Monsters.Add(randomMonster),
                     CurrentPhase = Phase.HeroAction,
                     ActiveHeroIndex = GetNextActiveHeroIndex(state, -1)
                 };
-                yield return (spawnState, probPerLocation);
+                yield return (randomState, probRandom);
+
+                // Chaser monster
+                var chaserMonster = new PhaseMonster(state.Monsters.Count, x, y, true, MonsterType.Chaser);
+                var chaserState = state with
+                {
+                    Monsters = state.Monsters.Add(chaserMonster),
+                    CurrentPhase = Phase.HeroAction,
+                    ActiveHeroIndex = GetNextActiveHeroIndex(state, -1)
+                };
+                yield return (chaserState, probChaser);
             }
         }
         else
         {
             // No valid spawn locations, just no spawn
-            yield return (noSpawn, 0.5);
+            yield return (noSpawn, 0.6);
         }
     }
 
@@ -229,21 +244,21 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
             yield break;
         }
 
-        // For simplicity with enumeration, move one monster at a time
-        // This creates a tree of outcomes
-        var outcomes = EnumerateAllMonsterMoves(state, aliveMonsters, 0);
-        
-        int totalOutcomes = outcomes.Count();
-        if (totalOutcomes == 0)
-        {
-            yield return (AdvanceToNextTurn(state), 1.0);
-            yield break;
-        }
+        // To avoid combinatorial explosion, we enumerate moves for only ONE randomly chosen monster
+        // Each monster has equal probability of being the one that moves
+        double probPerMonster = 1.0 / aliveMonsters.Count;
 
-        double probPerOutcome = 1.0 / totalOutcomes;
-        foreach (var outcome in outcomes)
+        foreach (var monster in aliveMonsters)
         {
-            yield return (outcome, probPerOutcome);
+            var possibleMoves = GetMonsterMoves(state, monster);
+            double probPerMove = probPerMonster / possibleMoves.Count;
+
+            foreach (var (newX, newY) in possibleMoves)
+            {
+                var movedState = MoveMonster(state, monster.Index, newX, newY);
+                var finalState = AdvanceToNextTurn(movedState);
+                yield return (finalState, probPerMove);
+            }
         }
     }
 
@@ -288,19 +303,7 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
             return moves;
         }
 
-        // Otherwise, move toward nearest hero
-        var nearestHero = state.Heroes
-            .Where(h => h.Status != HeroStatus.Dead)
-            .OrderBy(h => Math.Abs(h.X - monster.X) + Math.Abs(h.Y - monster.Y))
-            .FirstOrDefault();
-
-        if (nearestHero == null)
-        {
-            moves.Add((monster.X, monster.Y));
-            return moves;
-        }
-
-        // Try moving in each direction
+        // Get all valid adjacent positions
         var directions = new[] { (0, -1), (0, 1), (-1, 0), (1, 0) };
         foreach (var (dx, dy) in directions)
         {
@@ -314,8 +317,33 @@ public class PhaseBasedGame : IGameModel<PhaseGameState, SquadAction>
         }
 
         if (moves.Count == 0)
+        {
             moves.Add((monster.X, monster.Y)); // Stay in place
+            return moves;
+        }
 
+        // Chaser monsters: prefer moves toward nearest hero
+        if (monster.Type == MonsterType.Chaser)
+        {
+            var nearestHero = state.Heroes
+                .Where(h => h.Status != HeroStatus.Dead)
+                .OrderBy(h => Math.Abs(h.X - monster.X) + Math.Abs(h.Y - monster.Y))
+                .FirstOrDefault();
+
+            if (nearestHero != null)
+            {
+                // Find moves that get closer to hero
+                int currentDist = Math.Abs(monster.X - nearestHero.X) + Math.Abs(monster.Y - nearestHero.Y);
+                var betterMoves = moves
+                    .Where(m => Math.Abs(m.x - nearestHero.X) + Math.Abs(m.y - nearestHero.Y) < currentDist)
+                    .ToList();
+
+                if (betterMoves.Any())
+                    return betterMoves;
+            }
+        }
+
+        // Random monsters or Chaser with no better move: return all valid moves
         return moves;
     }
 

@@ -13,7 +13,9 @@
     <Compile Include="PhaseBasedGame.cs" />
     <Compile Include="PhaseGameSimulation.cs" />
     <Compile Include="PhaseBasedProgram.cs" />
+    <!-- <Compile Include="DetailedTreeView.cs" /> -->
     <!-- <Compile Include="AttackTestProgram.cs" /> -->
+    <!-- <Compile Include="TreeVisualization.cs" /> -->
   </ItemGroup>
 
   <ItemGroup>
