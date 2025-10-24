@@ -91,14 +91,22 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     private readonly int _gridWidth;
     private readonly int _gridHeight;
     private readonly int _maxTurns;
-    private readonly Random _setupRng;
 
-    public MageTacticalGame(int gridWidth = 5, int gridHeight = 5, int maxTurns = 20, int? seed = null)
+    // === Diagnostics ===
+    private readonly bool _invariantStrict;           // throw if invariants fail
+    private readonly Action<string>? _log;            // where to write diagnostics
+    private const double ProbEpsilon = 1e-9;
+
+    public MageTacticalGame(int gridWidth = 5, int gridHeight = 5, int maxTurns = 20, int? seed = null,
+        bool invariantStrict = false,
+        Action<string>? logger = null)
     {
         _gridWidth = gridWidth;
         _gridHeight = gridHeight;
         _maxTurns = maxTurns;
-        _setupRng = seed.HasValue ? new Random(seed.Value) : new Random();
+
+        _invariantStrict = invariantStrict;
+        _log = logger ?? Console.WriteLine;  // default to Console if not provided
     }
 
     public MageGameState InitialState()
@@ -117,7 +125,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             (2, 1), (2, 2), (2, 3)
         });
 
-        return new MageGameState(
+        var s = new MageGameState(
             Heroes: heroes,
             Monsters: ImmutableList<MageMonster>.Empty,
             TurnCount: 0,
@@ -130,6 +138,126 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             AttackResolution: null,
             ActiveHeroHasMoved: false
         );
+
+        ValidateDecisionStateHasActions(s, "InitialState()");
+        return s;
+    }
+    // Summaries help you see why a state has no actions.
+    private string SummarizeState(MageGameState s)
+    {
+        string heroes = string.Join(",",
+            s.Heroes.Select(h => $"{h.Index}:{h.Class}@({h.X},{h.Y}) S={h.Status} AP={h.ActionsRemaining} Ex={h.HasExited}"));
+        string mons = string.Join(",",
+            s.Monsters.Where(m => m.IsAlive).Select(m => $"{m.Index}:{m.Type}@({m.X},{m.Y})"));
+        return $"Phase={s.CurrentPhase} Turn={s.TurnCount} AH={s.ActiveHeroIndex} " +
+               $"Moved?={s.ActiveHeroHasMoved} AttackRes?={(s.AttackResolution != null)} " +
+               $"Exit=({s.ExitX},{s.ExitY}) | H=[{heroes}] | M=[{mons}]";
+    }
+
+    // True if the state *could* produce at least one legal action during HeroAction.
+    // This mirrors the structure of LegalActions but stops at first positive.
+    private bool HasAnyLegalAction(MageGameState s)
+    {
+        if (s.CurrentPhase != Phase.HeroAction) return false;
+
+        // Hero selection step
+        if (s.ActiveHeroIndex < 0)
+            return s.Heroes.Any(h => h.Status != HeroStatus.Dead && !h.HasExited && h.ActionsRemaining > 0);
+
+        if (s.ActiveHeroIndex >= s.Heroes.Count) return false;
+
+        var h = s.Heroes[s.ActiveHeroIndex];
+        if (h.Status == HeroStatus.Dead || h.HasExited || h.ActionsRemaining <= 0) return false;
+
+        // Movement (blocked by ActiveHeroHasMoved)
+        if (!s.ActiveHeroHasMoved)
+        {
+            var dirs = new (int dx, int dy)[] { (0, -1), (0, 1), (-1, 0), (1, 0) };
+            foreach (var (dx, dy) in dirs)
+            {
+                int nx = h.X + dx, ny = h.Y + dy;
+                if (IsValidPosition(s, nx, ny) &&
+                    !s.Monsters.Any(m => m.IsAlive && m.X == nx && m.Y == ny))
+                    return true;
+            }
+        }
+
+        if (h.Class == HeroClass.Mage)
+        {
+            // Any zap target?
+            if (s.Monsters.Any(m => m.IsAlive &&
+                    (Math.Abs(h.X - m.X) + Math.Abs(h.Y - m.Y)) <= h.ZapRange &&
+                    (h.X != m.X || h.Y != m.Y)))
+                return true;
+
+            // Any teleport option?
+            foreach (var t in s.Heroes.Where(x => x.Status != HeroStatus.Dead && !x.HasExited))
+            {
+                bool canTp = (t.Index == h.Index) || (t.X == h.X && t.Y == h.Y);
+                if (!canTp) continue;
+
+                // Search a small grid for a single valid destination (<=3 away)
+                for (int x = 0; x < _gridWidth; x++)
+                    for (int y = 0; y < _gridHeight; y++)
+                    {
+                        int dist = Math.Abs(t.X - x) + Math.Abs(t.Y - y);
+                        if (dist > 0 && dist <= 3 &&
+                            IsValidPosition(s, x, y) &&
+                            !s.Heroes.Any(u => (u.Status != HeroStatus.Dead && !u.HasExited) && u.X == x && u.Y == y) &&
+                            !s.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
+                            return true;
+                    }
+            }
+        }
+        else
+        {
+            // Any attack target?
+            if (s.Monsters.Any(m => m.IsAlive &&
+                    (Math.Abs(h.X - m.X) + Math.Abs(h.Y - m.Y)) <= h.Range))
+                return true;
+        }
+
+        // EndTurn is always available for an active hero with AP>0
+        return true;
+    }
+
+    private void FailOrLog(string msg)
+    {
+        if (_invariantStrict) throw new InvalidOperationException(msg);
+        _log?.Invoke(msg);
+    }
+
+    private void ValidateDecisionStateHasActions(MageGameState s, string where)
+    {
+        var term = IsTerminal(s, out _);
+        var chance = IsChanceNode(s);
+
+        if (!term && !chance)
+        {
+            bool any = HasAnyLegalAction(s);
+            if (!any)
+            {
+                FailOrLog($"[Invariant] Dead-end DECISION state with no legal actions at {where}.\n{SummarizeState(s)}");
+            }
+        }
+    }
+
+    private void ValidateChanceOutcomeList(
+        MageGameState s,
+        List<(MageGameState outcome, double probability)> outcomes,
+        string where)
+    {
+        if (outcomes.Count == 0)
+        {
+            FailOrLog($"[Invariant] ChanceOutcomes returned EMPTY at {where}.\n{SummarizeState(s)}");
+            return;
+        }
+
+        double sum = outcomes.Sum(o => o.probability);
+        if (double.IsNaN(sum) || Math.Abs(sum - 1.0) > 1e-6)
+        {
+            FailOrLog($"[Invariant] ChanceOutcomes probabilities sum to {sum:F12} (≠ 1) at {where}.\n{SummarizeState(s)}");
+        }
     }
 
     public bool IsTerminal(in MageGameState state, out double terminalValue)
@@ -181,13 +309,14 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
     public IEnumerable<(MageGameState outcome, double probability)> ChanceOutcomes(MageGameState state)
     {
+        var list = new List<(MageGameState, double)>();
+
         // Attack/Zap resolution
         if (state.AttackResolution != null)
         {
             var attack = state.AttackResolution;
             double hitChance = GetHitChance(attack.AttackScore);
 
-            // Hit outcome
             var hitState = state with
             {
                 Monsters = state.Monsters.SetItem(
@@ -197,33 +326,38 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 AttackResolution = null,
                 AccumulatedReward = state.AccumulatedReward + 5.0
             };
-            var hitFinal = AdvanceToNextPhaseOrHero(hitState);
-            yield return (hitFinal, hitChance);
+            list.Add((AdvanceToNextPhaseOrHero(hitState), hitChance));
 
-            // Miss outcome
             var missState = state with { AttackResolution = null };
-            var missFinal = AdvanceToNextPhaseOrHero(missState);
-            yield return (missFinal, 1.0 - hitChance);
+            list.Add((AdvanceToNextPhaseOrHero(missState), 1.0 - hitChance));
 
-            yield break;
+            ValidateChanceOutcomeList(state, list, "Attack/Zap resolution");
+            return list;
         }
 
         // Monster spawn
         if (state.CurrentPhase == Phase.MonsterSpawn)
         {
-            foreach (var outcome in EnumerateMonsterSpawnOutcomes(state))
-                yield return outcome;
-            yield break;
+            list.AddRange(EnumerateMonsterSpawnOutcomes(state));
+            ValidateChanceOutcomeList(state, list, "MonsterSpawn");
+            return list;
         }
 
         // Monster movement
         if (state.CurrentPhase == Phase.MonsterAction)
         {
-            foreach (var outcome in EnumerateMonsterMovementOutcomes(state))
-                yield return outcome;
-            yield break;
+            list.AddRange(EnumerateMonsterMovementOutcomes(state));
+            ValidateChanceOutcomeList(state, list, "MonsterAction");
+            return list;
         }
+
+        // Defensive: if IsChanceNode returned false but we got here,
+        // just return a single outcome (identity) to avoid breaking callers.
+        FailOrLog($"[Invariant] ChanceOutcomes called for non-chance state.\n{SummarizeState(state)}");
+        list.Add((state, 1.0));
+        return list;
     }
+
 
     private IEnumerable<(MageGameState outcome, double probability)> EnumerateMonsterSpawnOutcomes(MageGameState state)
     {
@@ -413,30 +547,45 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
     public IEnumerable<MageAction> LegalActions(MageGameState state)
     {
-        if (state.CurrentPhase != Phase.HeroAction)
-            yield break;
+        // Collect, then validate/log before returning
+        var actions = new List<MageAction>();
 
-        // Hero activation selection - choose which hero acts next
+        if (state.CurrentPhase != Phase.HeroAction)
+            return actions; // empty (and SelectDown shouldn't ask for actions in non-hero phases)
+
+        // Hero activation selection
         if (state.ActiveHeroIndex < 0)
         {
             foreach (var hero in state.Heroes)
             {
                 if (hero.Status != HeroStatus.Dead && !hero.HasExited && hero.ActionsRemaining > 0)
-                {
-                    yield return new MageAction(ActionType.ActivateHero, TargetIndex: hero.Index);
-                }
+                    actions.Add(new MageAction(ActionType.ActivateHero, TargetIndex: hero.Index));
             }
-            yield break;
+
+            if (actions.Count == 0)
+            {
+                // This is a classic dead-end source: no heroes with AP while phase == HeroAction.
+                FailOrLog($"[LegalActions] No heroes can be activated. {SummarizeState(state)}");
+            }
+
+            return actions;
         }
 
         if (state.ActiveHeroIndex >= state.Heroes.Count)
-            yield break;
+        {
+            FailOrLog($"[LegalActions] ActiveHeroIndex out of range. {SummarizeState(state)}");
+            return actions;
+        }
 
         var activeHero = state.Heroes[state.ActiveHeroIndex];
         if (activeHero.Status == HeroStatus.Dead || activeHero.HasExited || activeHero.ActionsRemaining <= 0)
-            yield break;
+        {
+            // Should have been advanced by AdvanceToNextPhaseOrHero; log if we still see it.
+            FailOrLog($"[LegalActions] Active hero cannot act (dead/exited/no AP). {SummarizeState(state)}");
+            return actions;
+        }
 
-        // Movement actions - only if hero hasn't moved yet this activation
+        // Movement
         if (!state.ActiveHeroHasMoved)
         {
             var moves = new[]
@@ -455,69 +604,89 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 if (IsValidPosition(state, newX, newY) &&
                     !state.Monsters.Any(m => m.IsAlive && m.X == newX && m.Y == newY))
                 {
-                    yield return new MageAction(actionType);
+                    actions.Add(new MageAction(actionType));
                 }
             }
         }
 
-        // Mage special abilities
         if (activeHero.Class == HeroClass.Mage)
         {
-            // Zap: Ranged attack on monsters within range
+            // Zap
             foreach (var monster in state.Monsters.Where(m => m.IsAlive))
             {
                 int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
                 if (distance <= activeHero.ZapRange && distance > 0)
                 {
-                    yield return new MageAction(ActionType.ZapMonster, TargetIndex: monster.Index);
+                    actions.Add(new MageAction(ActionType.ZapMonster, TargetIndex: monster.Index));
                 }
             }
 
-            // Teleport: Move another hero within range
-            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && !h.HasExited && h.Index != activeHero.Index))
+            // Teleport (self or co-located ally) within 3
+            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && !h.HasExited))
             {
-                int heroDistance = Math.Abs(activeHero.X - targetHero.X) + Math.Abs(activeHero.Y - targetHero.Y);
-                if (heroDistance <= activeHero.TeleportRange)
-                {
-                    // Find valid teleport destinations (within TeleportRange of target hero's current position)
-                    for (int x = 0; x < _gridWidth; x++)
+                bool canTeleport = (targetHero.Index == activeHero.Index) ||
+                                   (targetHero.X == activeHero.X && targetHero.Y == activeHero.Y);
+
+                if (!canTeleport) continue;
+
+                for (int x = 0; x < _gridWidth; x++)
+                    for (int y = 0; y < _gridHeight; y++)
                     {
-                        for (int y = 0; y < _gridHeight; y++)
+                        int destDistance = Math.Abs(targetHero.X - x) + Math.Abs(targetHero.Y - y);
+                        if (destDistance > 0 && destDistance <= 3 &&
+                            IsValidPosition(state, x, y) &&
+                            !state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y) &&
+                            !state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
                         {
-                            int destDistance = Math.Abs(targetHero.X - x) + Math.Abs(targetHero.Y - y);
-                            if (destDistance > 0 && destDistance <= 3 && // Teleport up to 3 squares
-                                IsValidPosition(state, x, y) &&
-                                !state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y) &&
-                                !state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
-                            {
-                                yield return new MageAction(ActionType.TeleportHero, x, y, targetHero.Index);
-                            }
+                            actions.Add(new MageAction(ActionType.TeleportHero, x, y, targetHero.Index));
                         }
                     }
-                }
             }
         }
         else
         {
-            // Regular Attack action (non-Mage heroes only)
+            // Melee attack
             foreach (var monster in state.Monsters.Where(m => m.IsAlive))
             {
                 int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
                 if (distance <= activeHero.Range)
                 {
-                    yield return new MageAction(ActionType.Attack, TargetIndex: monster.Index);
+                    actions.Add(new MageAction(ActionType.Attack, TargetIndex: monster.Index));
                 }
             }
         }
 
-        // End turn
-        yield return new MageAction(ActionType.EndTurn);
+        // End turn is always legal for an active hero with AP>0
+        actions.Add(new MageAction(ActionType.EndTurn));
+
+        // Final decision-state validation
+        if (actions.Count == 0)
+        {
+            FailOrLog($"[LegalActions] Empty action list produced. {SummarizeState(state)}");
+        }
+        else
+        {
+            // If this is a decision state, confirm we *do* have at least one action
+            ValidateDecisionStateHasActions(state, "LegalActions()");
+        }
+
+        return actions;
     }
+
 
     public MageGameState Step(in MageGameState state, in MageAction action)
     {
         if (state.CurrentPhase != Phase.HeroAction)
+        {
+            FailOrLog($"[Step] Called in non-HeroAction phase. {SummarizeState(state)}");
             return state;
+        }
+
+        if (state.ActiveHeroIndex < 0)
+        {
+            if (action.Type != ActionType.ActivateHero)
+                FailOrLog($"[Step] Expected ActivateHero but got {action.Type}. {SummarizeState(state)}");
+        }
 
         // Hero activation - just set the active hero, don't consume actions, reset move flag
         if (action.Type == ActionType.ActivateHero)
@@ -579,6 +748,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                     reward += CalculateMovementReward(state,
                         state.Heroes[action.TargetIndex].X, state.Heroes[action.TargetIndex].Y,
                         action.TargetX, action.TargetY);
+                    // Teleport doesn't count as movement - Mage can still move after teleporting
                 }
                 break;
 
@@ -599,7 +769,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         var hero = state.Heroes[heroIndex];
         var hasExited = (newX == state.ExitX && newY == state.ExitY);
 
-        return state with
+        var newState = state with
         {
             Heroes = state.Heroes.SetItem(heroIndex, hero with
             {
@@ -609,6 +779,14 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 HasExited = hasExited
             })
         };
+
+        // If hero exited, deactivate them
+        if (hasExited)
+        {
+            newState = newState with { ActiveHeroIndex = -1 };
+        }
+
+        return newState;
     }
 
     private MageGameState TeleportHero(MageGameState state, int targetHeroIndex, int newX, int newY)
@@ -617,14 +795,38 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         var targetHero = state.Heroes[targetHeroIndex];
         var hasExited = (newX == state.ExitX && newY == state.ExitY);
 
-        var newState = state with
+        // Special case: Mage teleporting herself
+        if (targetHeroIndex == state.ActiveHeroIndex)
+        {
+            var newState = state with
+            {
+                Heroes = state.Heroes.SetItem(targetHeroIndex, mageHero with
+                {
+                    X = newX,
+                    Y = newY,
+                    ActionsRemaining = mageHero.ActionsRemaining - 1,
+                    HasExited = hasExited
+                })
+            };
+
+            // If mage exited, deactivate
+            if (hasExited)
+            {
+                newState = newState with { ActiveHeroIndex = -1 };
+            }
+
+            return newState;
+        }
+
+        // Normal case: Mage teleporting another hero
+        var result = state with
         {
             Heroes = state.Heroes
                 .SetItem(state.ActiveHeroIndex, mageHero with { ActionsRemaining = mageHero.ActionsRemaining - 1 })
                 .SetItem(targetHeroIndex, targetHero with { X = newX, Y = newY, HasExited = hasExited })
         };
 
-        return newState;
+        return result;
     }
 
     private MageGameState ProcessAttack(MageGameState state, int heroIndex, int monsterIndex, int attackScore, bool isZap)
@@ -680,15 +882,15 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (state.CurrentPhase != Phase.HeroAction)
             return state;
 
-        // If no active hero or active hero still has actions, no change
-        if (state.ActiveHeroIndex < 0)
-            return state;
+        // If we have an active hero with actions remaining, no change
+        if (state.ActiveHeroIndex >= 0)
+        {
+            var currentHero = state.Heroes[state.ActiveHeroIndex];
+            if (currentHero.ActionsRemaining > 0)
+                return state;
+        }
 
-        var currentHero = state.Heroes[state.ActiveHeroIndex];
-        if (currentHero.ActionsRemaining > 0)
-            return state;
-
-        // Current hero finished - check if any heroes still have actions
+        // Current hero finished (or no active hero) - check if any heroes still have actions
         bool anyHeroesRemaining = state.Heroes.Any(h =>
             h.Status != HeroStatus.Dead && !h.HasExited && h.ActionsRemaining > 0);
 

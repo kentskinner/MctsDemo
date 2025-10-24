@@ -20,8 +20,8 @@ class MageGameProgram
         Console.WriteLine("  - Mage: Can't attack, but can Zap (range 3) or Teleport heroes (range 4)");
         Console.WriteLine();
 
-        var game = new MageTacticalGame(gridWidth: 5, gridHeight: 5, maxTurns: 20, seed: 42);
-        
+        var game = new MageTacticalGame(gridWidth: 5, gridHeight: 5, maxTurns: 20, seed: 42, invariantStrict: true);
+
         var simulation = new MageGameSimulation();
         var mcts = new Mcts.Mcts<MageGameState, MageAction>(
             game,

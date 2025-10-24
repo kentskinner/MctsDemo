@@ -40,7 +40,17 @@ public class ProgressiveBiasSelection<TState, TAction> : ISelectionPolicy<TState
     public Node<TState, TAction> SelectChild(Node<TState, TAction> node, Random rng)
     {
         if (node.Children.Count == 0)
-            throw new InvalidOperationException("No children to select.");
+        {
+            var parentInfo = node.Parent == null ? "null" :
+                $"Kind={node.Parent.Kind}, Untried={node.Parent.Untried.Count}, Children={node.Parent.Children.Count}";
+            var msg =
+                $"No children to select.\n" +
+                $"Node: Kind={node.Kind}, Visits={node.Visits}, TotalValue={node.TotalValue}, " +
+                $"Untried={node.Untried.Count}, Children={node.Children.Count}\n" +
+                $"IncomingAction={node.IncomingAction}\n" +
+                $"Parent: {parentInfo}";
+            throw new InvalidOperationException(msg);
+        }
 
         var state = node.State;
         var totalVisits = node.Visits;
