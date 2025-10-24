@@ -112,10 +112,10 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     public MageGameState InitialState()
     {
         // Create heroes - including a Mage with special abilities
-        // Mage: AttackScore=0 (can't attack), ZapRange=3, TeleportRange=4
+        // Mage: AttackScore=0 (can't attack), ZapRange=2, TeleportRange=2
         var heroes = ImmutableList.Create(
             new MageHero(0, HeroClass.Warrior, 0, 0, HeroStatus.Healthy, 7, 1, 2, 0, 0, false),
-            new MageHero(1, HeroClass.Mage, 1, 0, HeroStatus.Healthy, 0, 1, 2, 3, 4, false),
+            new MageHero(1, HeroClass.Mage, 1, 0, HeroStatus.Healthy, 0, 1, 2, 3, 2, false),
             new MageHero(2, HeroClass.Rogue, 0, 1, HeroStatus.Healthy, 8, 2, 2, 0, 0, false)
         );
 
@@ -376,7 +376,15 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             }
         }
 
-        if (emptyPositions.Count == 0)
+        // Prioritize spawn locations near the exit (within distance 4)
+        var nearExit = emptyPositions
+            .Where(pos => Math.Abs(pos.x - state.ExitX) + Math.Abs(pos.y - state.ExitY) <= 4)
+            .ToList();
+        
+        // Use near-exit positions if available, otherwise use all positions
+        var spawnPositions = nearExit.Count > 0 ? nearExit : emptyPositions;
+
+        if (spawnPositions.Count == 0)
         {
             var noSpawnState = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = -1 };
             foreach (var hero in noSpawnState.Heroes)
@@ -393,10 +401,10 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             yield break;
         }
 
-        // 60% spawn rate: 60% Random, 40% Chaser
-        double probSpawn = 0.6;
+        // 80% spawn rate: 60% Random, 40% Chaser
+        double probSpawn = 0.8;
         double probNoSpawn = 1.0 - probSpawn;
-        double probPerLocation = probSpawn / emptyPositions.Count;
+        double probPerLocation = probSpawn / spawnPositions.Count;
 
         // No spawn outcome
         var noSpawn = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = -1 };
@@ -413,7 +421,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         yield return (noSpawn, probNoSpawn);
 
         // Spawn Random monster at each location
-        foreach (var (x, y) in emptyPositions)
+        foreach (var (x, y) in spawnPositions)
         {
             int newIndex = state.Monsters.Count;
             var newMonster = new MageMonster(newIndex, x, y, true, MonsterType.Random);
@@ -437,7 +445,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         }
 
         // Spawn Chaser monster at each location
-        foreach (var (x, y) in emptyPositions)
+        foreach (var (x, y) in spawnPositions)
         {
             int newIndex = state.Monsters.Count;
             var newMonster = new MageMonster(newIndex, x, y, true, MonsterType.Chaser);
@@ -621,7 +629,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 }
             }
 
-            // Teleport (self or co-located ally) within 3
+            // Teleport (self or co-located ally)
             foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && !h.HasExited))
             {
                 bool canTeleport = (targetHero.Index == activeHero.Index) ||
@@ -633,7 +641,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                     for (int y = 0; y < _gridHeight; y++)
                     {
                         int destDistance = Math.Abs(targetHero.X - x) + Math.Abs(targetHero.Y - y);
-                        if (destDistance > 0 && destDistance <= 3 &&
+                        if (destDistance > 0 && destDistance <= activeHero.TeleportRange &&
                             IsValidPosition(state, x, y) &&
                             !state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y) &&
                             !state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
