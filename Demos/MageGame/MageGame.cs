@@ -81,7 +81,8 @@ public record MageGameState(
     int ExitY,
     double AccumulatedReward,
     ImmutableHashSet<(int, int)> Walls,
-    PendingAttack? AttackResolution
+    PendingAttack? AttackResolution,
+    bool ActiveHeroHasMoved  // Track if active hero used a move action this activation
 );
 
 public class MageTacticalGame : IGameModel<MageGameState, MageAction>
@@ -125,7 +126,8 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             ExitY: 4,
             AccumulatedReward: 0.0,
             Walls: walls,
-            AttackResolution: null
+            AttackResolution: null,
+            ActiveHeroHasMoved: false
         );
     }
 
@@ -433,24 +435,27 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (activeHero.Status == HeroStatus.Dead || activeHero.ActionsRemaining <= 0)
             yield break;
 
-        // Movement actions
-        var moves = new[]
+        // Movement actions - only if hero hasn't moved yet this activation
+        if (!state.ActiveHeroHasMoved)
         {
-            (ActionType.MoveNorth, 0, -1),
-            (ActionType.MoveSouth, 0, 1),
-            (ActionType.MoveWest, -1, 0),
-            (ActionType.MoveEast, 1, 0)
-        };
-
-        foreach (var (actionType, dx, dy) in moves)
-        {
-            int newX = activeHero.X + dx;
-            int newY = activeHero.Y + dy;
-
-            if (IsValidPosition(state, newX, newY) &&
-                !state.Monsters.Any(m => m.IsAlive && m.X == newX && m.Y == newY))
+            var moves = new[]
             {
-                yield return new MageAction(actionType);
+                (ActionType.MoveNorth, 0, -1),
+                (ActionType.MoveSouth, 0, 1),
+                (ActionType.MoveWest, -1, 0),
+                (ActionType.MoveEast, 1, 0)
+            };
+
+            foreach (var (actionType, dx, dy) in moves)
+            {
+                int newX = activeHero.X + dx;
+                int newY = activeHero.Y + dy;
+
+                if (IsValidPosition(state, newX, newY) &&
+                    !state.Monsters.Any(m => m.IsAlive && m.X == newX && m.Y == newY))
+                {
+                    yield return new MageAction(actionType);
+                }
             }
         }
 
@@ -513,10 +518,10 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (state.CurrentPhase != Phase.HeroAction)
             return state;
 
-        // Hero activation - just set the active hero, don't consume actions
+        // Hero activation - just set the active hero, don't consume actions, reset move flag
         if (action.Type == ActionType.ActivateHero)
         {
-            return state with { ActiveHeroIndex = action.TargetIndex };
+            return state with { ActiveHeroIndex = action.TargetIndex, ActiveHeroHasMoved = false };
         }
 
         var hero = state.Heroes[state.ActiveHeroIndex];
@@ -530,21 +535,25 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             case ActionType.MoveNorth:
                 newState = MoveHero(state, hero.Index, hero.X, hero.Y - 1);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X, hero.Y - 1);
+                newState = newState with { ActiveHeroHasMoved = true };
                 break;
 
             case ActionType.MoveSouth:
                 newState = MoveHero(state, hero.Index, hero.X, hero.Y + 1);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X, hero.Y + 1);
+                newState = newState with { ActiveHeroHasMoved = true };
                 break;
 
             case ActionType.MoveWest:
                 newState = MoveHero(state, hero.Index, hero.X - 1, hero.Y);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X - 1, hero.Y);
+                newState = newState with { ActiveHeroHasMoved = true };
                 break;
 
             case ActionType.MoveEast:
                 newState = MoveHero(state, hero.Index, hero.X + 1, hero.Y);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X + 1, hero.Y);
+                newState = newState with { ActiveHeroHasMoved = true };
                 break;
 
             case ActionType.Attack:
@@ -681,14 +690,15 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (anyHeroesRemaining)
         {
             // Reset to hero selection
-            return state with { ActiveHeroIndex = -1 };
+            return state with { ActiveHeroIndex = -1, ActiveHeroHasMoved = false };
         }
 
         // All heroes done - move to monster phase
         return state with
         {
             CurrentPhase = Phase.MonsterAction,
-            ActiveHeroIndex = -1
+            ActiveHeroIndex = -1,
+            ActiveHeroHasMoved = false
         };
     }
 
