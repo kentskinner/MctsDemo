@@ -80,7 +80,8 @@ public record GameState(
     int CurrentHeroIndex,  // Which hero is currently acting
     int TurnCount,
     bool IsChance,  // True when at turn boundary or after attack
-    ChanceType ChanceNodeType  // What kind of chance event is pending
+    ChanceType ChanceNodeType,  // What kind of chance event is pending
+    double AccumulatedReward  // Running total of intermediate rewards for reward shaping
 );
 
 /// <summary>
@@ -195,7 +196,8 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             CurrentHeroIndex: 0,
             TurnCount: 0,
             IsChance: false,
-            ChanceNodeType: ChanceType.None
+            ChanceNodeType: ChanceType.None,
+            AccumulatedReward: 0.0
         );
     }
 
@@ -235,6 +237,28 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
     {
         return state.Monsters.Any(m => m.Health > 0 &&
             Math.Abs(m.X - hero.X) + Math.Abs(m.Y - hero.Y) <= hero.AttackRange);
+    }
+
+    private double CalculateMoveReward(GameState oldState, GameState newState, SquadAction action)
+    {
+        double reward = 0.0;
+
+        // Reward for moving closer to exit
+        var hero = newState.Heroes[newState.CurrentHeroIndex];
+        var oldHero = oldState.Heroes[oldState.CurrentHeroIndex];
+
+        int oldDistToExit = Math.Abs(oldHero.X - oldState.ExitX) + Math.Abs(oldHero.Y - oldState.ExitY);
+        int newDistToExit = Math.Abs(hero.X - newState.ExitX) + Math.Abs(hero.Y - newState.ExitY);
+
+        if (newDistToExit < oldDistToExit)
+            reward += 2.0;  // Significant reward for moving closer to exit
+        else if (newDistToExit > oldDistToExit)
+            reward -= 1.5;  // Penalty for moving away from exit
+
+        // Small penalty for passing time (encourages faster solutions)
+        reward -= 0.05;
+
+        return reward;
     }
 
     public GameState Step(in GameState state, in SquadAction action)
@@ -313,7 +337,7 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
                 newHeroes[newHeroIndex] with { ActionsRemaining = 2 });
         }
 
-        return state with
+        var newState = state with
         {
             Heroes = newHeroes,
             Monsters = newMonsters,
@@ -321,6 +345,14 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             TurnCount = newTurnCount,
             IsChance = false,
             ChanceNodeType = ChanceType.None
+        };
+
+        // Add reward shaping for moves
+        double moveReward = CalculateMoveReward(state, newState, action);
+
+        return newState with
+        {
+            AccumulatedReward = state.AccumulatedReward + moveReward
         };
     }
 
@@ -739,14 +771,14 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
         // Lose if all heroes are dead
         if (state.Heroes.All(h => h.Health <= 0))
         {
-            terminalValue = -100;
+            terminalValue = -100 + state.AccumulatedReward;
             return true;
         }
 
         // Lose if out of turns
         if (state.TurnCount >= _maxTurns)
         {
-            terminalValue = -50;
+            terminalValue = -50 + state.AccumulatedReward;
             return true;
         }
 
@@ -772,11 +804,32 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             // Penalty for turns used
             reward -= state.TurnCount;
 
-            terminalValue = reward;
+            terminalValue = reward + state.AccumulatedReward;
             return true;
         }
 
         terminalValue = 0;
         return false;
+    }
+
+    /// <summary>
+    /// Heuristic value for non-terminal states (used during rollouts when depth limit is reached)
+    /// </summary>
+    public double HeuristicValue(in GameState state)
+    {
+        // Return accumulated reward plus distance-to-exit heuristic
+        double value = state.AccumulatedReward;
+
+        // Add heuristic based on closest hero to exit
+        int exitX = state.ExitX;
+        int exitY = state.ExitY;
+        var livingHeroes = state.Heroes.Where(h => h.Health > 0).ToList();
+        if (livingHeroes.Any())
+        {
+            int minDist = livingHeroes.Min(h => Math.Abs(h.X - exitX) + Math.Abs(h.Y - exitY));
+            value -= minDist * 0.1;  // Penalty for being far from exit
+        }
+
+        return value;
     }
 }
