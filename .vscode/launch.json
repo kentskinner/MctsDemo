@@ -1,0 +1,38 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug TacticalSquad",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/Demos/TacticalSquad/bin/Debug/net7.0/TacticalSquad.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/Demos/TacticalSquad",
+            "console": "internalConsole",
+            "stopAtEntry": false
+        },
+        {
+            "name": "Debug SmallGridDebug",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/Demos/TacticalSquad/bin/Debug/net7.0/SmallGridDebug.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/Demos/TacticalSquad",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        },
+        {
+            "name": "Debug TacticalSquadInteractive",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/Demos/TacticalSquad/bin/Debug/net7.0/TacticalSquadInteractive.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/Demos/TacticalSquad",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        }
+    ]
+}

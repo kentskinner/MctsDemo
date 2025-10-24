@@ -152,6 +152,57 @@ namespace TinyQuestDemo
             return s.PendingChestItem;
         }
 
+        public IEnumerable<(QuestState outcome, double probability)> ChanceOutcomes(QuestState s)
+        {
+            if (!s.PendingChestItem) yield break;
+
+            // Determine which items the active hero doesn't have
+            var activeHero = GetActiveHero(s);
+            var availableItems = new List<QuestAction>();
+
+            if (!activeHero.HasItem1) availableItems.Add(QuestAction.GiveItem1);
+            if (!activeHero.HasItem2) availableItems.Add(QuestAction.GiveItem2);
+            if (!activeHero.HasItem3) availableItems.Add(QuestAction.GiveItem3);
+
+            if (availableItems.Count == 0)
+            {
+                // Hero has all items, give nothing
+                yield return (Step(s, QuestAction.GiveNothing), 1.0);
+                yield break;
+            }
+
+            // Each available item has equal probability
+            double prob = 1.0 / availableItems.Count;
+            foreach (var item in availableItems)
+            {
+                yield return (Step(s, item), prob);
+            }
+        }
+
+        public QuestState SampleChanceOutcome(in QuestState s, Random rng)
+        {
+            if (!s.PendingChestItem) return s;
+
+            // Determine which items the active hero doesn't have
+            var activeHero = GetActiveHero(s);
+            var availableItems = new List<QuestAction>();
+
+            if (!activeHero.HasItem1) availableItems.Add(QuestAction.GiveItem1);
+            if (!activeHero.HasItem2) availableItems.Add(QuestAction.GiveItem2);
+            if (!activeHero.HasItem3) availableItems.Add(QuestAction.GiveItem3);
+
+            if (availableItems.Count == 0)
+            {
+                // Hero has all items, give nothing
+                return Step(s, QuestAction.GiveNothing);
+            }
+
+            // Randomly pick one of the available items
+            int choiceIndex = rng.Next(availableItems.Count);
+            var chosenAction = availableItems[choiceIndex];
+            return Step(s, chosenAction);
+        }
+
         public QuestState SampleChance(in QuestState s, Random rng, out double logProb)
         {
             if (!s.PendingChestItem)

@@ -250,7 +250,13 @@ namespace Mcts;
         Children.Add(ch);
             return ch;
         }
+
+    public override string ToString()
+    {
+        var avg = Visits > 0 ? TotalValue / Visits : 0.0;
+        return $"V:{Visits} Q:{TotalValue:F1} Avg:{avg:F2} {Kind} Action:{IncomingAction}";
     }
+}
 
     // ----------------------------
     // Options & helpers

@@ -16,7 +16,7 @@ public sealed class RewardShapedSimulation : ISimulationPolicy<GameState, SquadA
         for (int d = 0; d < maxDepth; d++)
         {
             if (game.IsTerminal(s, out var value))
-                return value;
+                return value + s.AccumulatedReward; // Add accumulated reward to terminal value
 
             if (game.IsChanceNode(s))
             {

@@ -1,0 +1,7 @@
+=== Stats from first Search() (non-deterministic rollout) ===
+MoveEast: visits=9991, value=199357.10, avg=19.9537
+EndTurn: visits=4, value=68.20, avg=17.0500
+MoveWest: visits=3, value=48.35, avg=16.1167
+MoveSouth: visits=1, value=14.35, avg=14.3500
+MoveNorth: visits=1, value=10.75, avg=10.7500
+=============================================

@@ -42,6 +42,47 @@ namespace PigDemo
 
         public bool IsChanceNode(in PigState s) => s.AwaitingRoll;
 
+        public IEnumerable<(PigState outcome, double probability)> ChanceOutcomes(PigState s)
+        {
+            if (!s.AwaitingRoll) yield break;
+
+            // Six equally likely die rolls
+            for (int die = 1; die <= 6; die++)
+            {
+                PigState outcome;
+                if (die == 1)
+                {
+                    // Bust: lose turn total, pass turn
+                    outcome = s.PlayerToMove == 0
+                        ? new PigState(s.P0, s.P1, 0, 1, false)
+                        : new PigState(s.P0, s.P1, 0, 0, false);
+                }
+                else
+                {
+                    // Add to turn total and continue player's turn
+                    outcome = new PigState(s.P0, s.P1, s.TurnTotal + die, s.PlayerToMove, false);
+                }
+                yield return (outcome, 1.0 / 6.0);
+            }
+        }
+
+        public PigState SampleChanceOutcome(in PigState s, Random rng)
+        {
+            int die = rng.Next(1, 7);
+            if (die == 1)
+            {
+                // Bust: lose turn total, pass turn
+                return s.PlayerToMove == 0
+                    ? new PigState(s.P0, s.P1, 0, 1, false)
+                    : new PigState(s.P0, s.P1, 0, 0, false);
+            }
+            else
+            {
+                // Add to turn total and continue player's turn
+                return new PigState(s.P0, s.P1, s.TurnTotal + die, s.PlayerToMove, false);
+            }
+        }
+
         public PigState SampleChance(in PigState s, Random rng, out double logProb)
         {
             // Roll a fair d6

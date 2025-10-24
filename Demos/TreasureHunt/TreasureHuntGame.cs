@@ -73,6 +73,16 @@ public class TreasureHuntGame : IGameModel<GameState, GameAction>
         return false;
     }
 
+    public IEnumerable<(GameState outcome, double probability)> ChanceOutcomes(GameState state)
+    {
+        yield break; // No chance nodes
+    }
+
+    public GameState SampleChanceOutcome(in GameState state, Random rng)
+    {
+        throw new InvalidOperationException("No chance nodes in this game");
+    }
+
     public GameState SampleChance(in GameState state, Random rng, out double logProb)
     {
         // No chance nodes in this game

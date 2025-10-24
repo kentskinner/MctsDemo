@@ -771,14 +771,14 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
         // Lose if all heroes are dead
         if (state.Heroes.All(h => h.Health <= 0))
         {
-            terminalValue = -100 + state.AccumulatedReward;
+            terminalValue = -100;
             return true;
         }
 
         // Lose if out of turns
         if (state.TurnCount >= _maxTurns)
         {
-            terminalValue = -50 + state.AccumulatedReward;
+            terminalValue = -50;
             return true;
         }
 
@@ -804,7 +804,7 @@ public class TacticalSquadGame : IGameModel<GameState, SquadAction>
             // Penalty for turns used
             reward -= state.TurnCount;
 
-            terminalValue = reward + state.AccumulatedReward;
+            terminalValue = reward;
             return true;
         }
 
