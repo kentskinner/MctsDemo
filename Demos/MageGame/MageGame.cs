@@ -56,6 +56,7 @@ public record PendingAttack(
 
 public enum ActionType
 {
+    ActivateHero,   // Choose which hero to activate
     MoveNorth, MoveSouth, MoveEast, MoveWest,
     Attack,         // Regular heroes only
     ZapMonster,     // Mage only - ranged attack with hit chance
@@ -132,8 +133,9 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     {
         var s = state; // Copy to avoid ref issues in lambdas
         
-        // Win: Any hero reached exit
-        if (s.Heroes.Any(h => h.Status != HeroStatus.Dead && h.X == s.ExitX && h.Y == s.ExitY))
+        // Win: All living heroes reached exit
+        var livingHeroes = s.Heroes.Where(h => h.Status != HeroStatus.Dead).ToList();
+        if (livingHeroes.Count > 0 && livingHeroes.All(h => h.X == s.ExitX && h.Y == s.ExitY))
         {
             terminalValue = 100.0;
             return true;
@@ -239,7 +241,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
         if (emptyPositions.Count == 0)
         {
-            var noSpawnState = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = 0 };
+            var noSpawnState = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = -1 };
             foreach (var hero in noSpawnState.Heroes)
             {
                 if (hero.Status != HeroStatus.Dead)
@@ -260,7 +262,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         double probPerLocation = probSpawn / emptyPositions.Count;
 
         // No spawn outcome
-        var noSpawn = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = 0 };
+        var noSpawn = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = -1 };
         foreach (var hero in noSpawn.Heroes)
         {
             if (hero.Status != HeroStatus.Dead)
@@ -282,7 +284,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             {
                 Monsters = state.Monsters.Add(newMonster),
                 CurrentPhase = Phase.HeroAction,
-                ActiveHeroIndex = 0
+                ActiveHeroIndex = -1
             };
             foreach (var hero in spawnState.Heroes)
             {
@@ -306,7 +308,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             {
                 Monsters = state.Monsters.Add(newMonster),
                 CurrentPhase = Phase.HeroAction,
-                ActiveHeroIndex = 0
+                ActiveHeroIndex = -1
             };
             foreach (var hero in spawnState.Heroes)
             {
@@ -411,11 +413,24 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (state.CurrentPhase != Phase.HeroAction)
             yield break;
 
-        if (state.ActiveHeroIndex < 0 || state.ActiveHeroIndex >= state.Heroes.Count)
+        // Hero activation selection - choose which hero acts next
+        if (state.ActiveHeroIndex < 0)
+        {
+            foreach (var hero in state.Heroes)
+            {
+                if (hero.Status != HeroStatus.Dead && hero.ActionsRemaining > 0)
+                {
+                    yield return new MageAction(ActionType.ActivateHero, TargetIndex: hero.Index);
+                }
+            }
+            yield break;
+        }
+
+        if (state.ActiveHeroIndex >= state.Heroes.Count)
             yield break;
 
-        var hero = state.Heroes[state.ActiveHeroIndex];
-        if (hero.Status == HeroStatus.Dead || hero.ActionsRemaining <= 0)
+        var activeHero = state.Heroes[state.ActiveHeroIndex];
+        if (activeHero.Status == HeroStatus.Dead || activeHero.ActionsRemaining <= 0)
             yield break;
 
         // Movement actions
@@ -429,8 +444,8 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
         foreach (var (actionType, dx, dy) in moves)
         {
-            int newX = hero.X + dx;
-            int newY = hero.Y + dy;
+            int newX = activeHero.X + dx;
+            int newY = activeHero.Y + dy;
 
             if (IsValidPosition(state, newX, newY) &&
                 !state.Monsters.Any(m => m.IsAlive && m.X == newX && m.Y == newY))
@@ -440,23 +455,23 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         }
 
         // Mage special abilities
-        if (hero.Class == HeroClass.Mage)
+        if (activeHero.Class == HeroClass.Mage)
         {
             // Zap: Ranged attack on monsters within range
             foreach (var monster in state.Monsters.Where(m => m.IsAlive))
             {
-                int distance = Math.Abs(hero.X - monster.X) + Math.Abs(hero.Y - monster.Y);
-                if (distance <= hero.ZapRange && distance > 0)
+                int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
+                if (distance <= activeHero.ZapRange && distance > 0)
                 {
                     yield return new MageAction(ActionType.ZapMonster, TargetIndex: monster.Index);
                 }
             }
 
             // Teleport: Move another hero within range
-            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && h.Index != hero.Index))
+            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && h.Index != activeHero.Index))
             {
-                int heroDistance = Math.Abs(hero.X - targetHero.X) + Math.Abs(hero.Y - targetHero.Y);
-                if (heroDistance <= hero.TeleportRange)
+                int heroDistance = Math.Abs(activeHero.X - targetHero.X) + Math.Abs(activeHero.Y - targetHero.Y);
+                if (heroDistance <= activeHero.TeleportRange)
                 {
                     // Find valid teleport destinations (within TeleportRange of target hero's current position)
                     for (int x = 0; x < _gridWidth; x++)
@@ -481,8 +496,8 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             // Regular Attack action (non-Mage heroes only)
             foreach (var monster in state.Monsters.Where(m => m.IsAlive))
             {
-                int distance = Math.Abs(hero.X - monster.X) + Math.Abs(hero.Y - monster.Y);
-                if (distance <= hero.Range)
+                int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
+                if (distance <= activeHero.Range)
                 {
                     yield return new MageAction(ActionType.Attack, TargetIndex: monster.Index);
                 }
@@ -497,6 +512,12 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     {
         if (state.CurrentPhase != Phase.HeroAction)
             return state;
+
+        // Hero activation - just set the active hero, don't consume actions
+        if (action.Type == ActionType.ActivateHero)
+        {
+            return state with { ActiveHeroIndex = action.TargetIndex };
+        }
 
         var hero = state.Heroes[state.ActiveHeroIndex];
 
@@ -645,17 +666,22 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (state.CurrentPhase != Phase.HeroAction)
             return state;
 
+        // If no active hero or active hero still has actions, no change
+        if (state.ActiveHeroIndex < 0)
+            return state;
+
         var currentHero = state.Heroes[state.ActiveHeroIndex];
         if (currentHero.ActionsRemaining > 0)
             return state;
 
-        // Find next hero with actions remaining
-        for (int i = state.ActiveHeroIndex + 1; i < state.Heroes.Count; i++)
+        // Current hero finished - check if any heroes still have actions
+        bool anyHeroesRemaining = state.Heroes.Any(h =>
+            h.Status != HeroStatus.Dead && h.ActionsRemaining > 0);
+
+        if (anyHeroesRemaining)
         {
-            if (state.Heroes[i].Status != HeroStatus.Dead && state.Heroes[i].ActionsRemaining > 0)
-            {
-                return state with { ActiveHeroIndex = i };
-            }
+            // Reset to hero selection
+            return state with { ActiveHeroIndex = -1 };
         }
 
         // All heroes done - move to monster phase

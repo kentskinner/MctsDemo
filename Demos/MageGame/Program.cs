@@ -46,7 +46,7 @@ class MageGameProgram
 
             if (game.IsChanceNode(state))
             {
-                // Resolve chance node
+                // Resolve chance node by sampling
                 var outcomes = game.ChanceOutcomes(state).ToList();
                 if (outcomes.Count == 1)
                 {
@@ -55,8 +55,9 @@ class MageGameProgram
                 }
                 else
                 {
-                    // Pick highest probability outcome for demo
-                    state = outcomes.OrderByDescending(o => o.probability).First().outcome;
+                    // Sample from probability distribution
+                    var rng = new Random();
+                    state = game.SampleChanceOutcome(state, rng);
                     Console.WriteLine($"[Chance node resolved: Phase={state.CurrentPhase}]");
                 }
             }
@@ -154,6 +155,7 @@ class MageGameProgram
     {
         return action.Type switch
         {
+            ActionType.ActivateHero => $"Activate({state.Heroes[action.TargetIndex].Class})",
             ActionType.MoveNorth => "MoveNorth",
             ActionType.MoveSouth => "MoveSouth",
             ActionType.MoveEast => "MoveEast",
