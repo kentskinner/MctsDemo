@@ -81,9 +81,9 @@ class MageGameProgram
             }
 
             turn++;
-            if (turn > 100)
+            if (turn > 500)
             {
-                Console.WriteLine("\nStopping after 100 iterations for safety.");
+                Console.WriteLine("\nStopping after 500 iterations for safety.");
                 break;
             }
         }

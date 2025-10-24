@@ -63,7 +63,8 @@ public enum ActionType
     MoveNorth, MoveSouth, MoveEast, MoveWest,
     Attack,         // Regular heroes only
     Cast,           // Mage only - roll 1d6 for spell points (once per activation)
-    ZapMonster,     // Mage only - ranged attack with hit chance (costs 2 spell points)
+    ZapMonster,     // Mage only - weak ranged attack, 9+ to hit (costs 2 spell points)
+    FireballMonster,// Mage only - strong ranged attack, 6+ to hit (costs 5 spell points)
     TeleportHero,   // Mage only - teleport ally (costs 4 spell points)
     EndTurn
 }
@@ -632,7 +633,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             return actions;
         }
 
-        // Movement - requires AP
+        // Movement - requires AP (clears spell points if any)
         if (!state.ActiveHeroHasMoved && activeHero.ActionsRemaining > 0)
         {
             var moves = new[]
@@ -664,7 +665,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 actions.Add(new MageAction(ActionType.Cast));
             }
 
-            // Zap - costs 2 spell points
+            // Zap - costs 2 spell points, range 2, requires 9+ to hit (weak)
             if (activeHero.SpellPoints >= 2)
             {
                 foreach (var monster in state.Monsters.Where(m => m.IsAlive))
@@ -673,6 +674,19 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                     if (distance <= activeHero.ZapRange && distance > 0)
                     {
                         actions.Add(new MageAction(ActionType.ZapMonster, TargetIndex: monster.Index));
+                    }
+                }
+            }
+
+            // Fireball - costs 5 spell points, range 2, requires 6+ to hit (strong)
+            if (activeHero.SpellPoints >= 5)
+            {
+                foreach (var monster in state.Monsters.Where(m => m.IsAlive))
+                {
+                    int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
+                    if (distance <= activeHero.ZapRange && distance > 0) // Uses same range as Zap
+                    {
+                        actions.Add(new MageAction(ActionType.FireballMonster, TargetIndex: monster.Index));
                     }
                 }
             }
@@ -778,30 +792,60 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 newState = MoveHero(state, hero.Index, hero.X, hero.Y - 1);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X, hero.Y - 1);
                 newState = newState with { ActiveHeroHasMoved = true };
+                // Clear spell points - movement ends casting
+                if (hero.SpellPoints > 0)
+                {
+                    var movedHero = newState.Heroes[hero.Index];
+                    newState = newState with { Heroes = newState.Heroes.SetItem(hero.Index, movedHero with { SpellPoints = 0 }) };
+                }
                 break;
 
             case ActionType.MoveSouth:
                 newState = MoveHero(state, hero.Index, hero.X, hero.Y + 1);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X, hero.Y + 1);
                 newState = newState with { ActiveHeroHasMoved = true };
+                // Clear spell points - movement ends casting
+                if (hero.SpellPoints > 0)
+                {
+                    var movedHero = newState.Heroes[hero.Index];
+                    newState = newState with { Heroes = newState.Heroes.SetItem(hero.Index, movedHero with { SpellPoints = 0 }) };
+                }
                 break;
 
             case ActionType.MoveWest:
                 newState = MoveHero(state, hero.Index, hero.X - 1, hero.Y);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X - 1, hero.Y);
                 newState = newState with { ActiveHeroHasMoved = true };
+                // Clear spell points - movement ends casting
+                if (hero.SpellPoints > 0)
+                {
+                    var movedHero = newState.Heroes[hero.Index];
+                    newState = newState with { Heroes = newState.Heroes.SetItem(hero.Index, movedHero with { SpellPoints = 0 }) };
+                }
                 break;
 
             case ActionType.MoveEast:
                 newState = MoveHero(state, hero.Index, hero.X + 1, hero.Y);
                 reward += CalculateMovementReward(state, hero.X, hero.Y, hero.X + 1, hero.Y);
                 newState = newState with { ActiveHeroHasMoved = true };
+                // Clear spell points - movement ends casting
+                if (hero.SpellPoints > 0)
+                {
+                    var movedHero = newState.Heroes[hero.Index];
+                    newState = newState with { Heroes = newState.Heroes.SetItem(hero.Index, movedHero with { SpellPoints = 0 }) };
+                }
                 break;
 
             case ActionType.Attack:
                 if (hero.Class != HeroClass.Mage)
                 {
                     newState = ProcessAttack(state, hero.Index, action.TargetIndex, hero.AttackScore, false);
+                    // Clear spell points - attack ends casting (though non-Mages shouldn't have spell points)
+                    if (hero.SpellPoints > 0)
+                    {
+                        var attackedHero = newState.Heroes[hero.Index];
+                        newState = newState with { Heroes = newState.Heroes.SetItem(hero.Index, attackedHero with { SpellPoints = 0 }) };
+                    }
                 }
                 break;
 
@@ -822,14 +866,30 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             case ActionType.ZapMonster:
                 if (hero.Class == HeroClass.Mage)
                 {
-                    // Mage zap uses lower attack score (harder to hit), costs 2 spell points (no AP cost)
-                    newState = ProcessAttack(state, hero.Index, action.TargetIndex, 6, true, consumeAP: false);
+                    // Zap: weak spell, requires 9+ to hit, costs 2 spell points (no AP cost)
+                    newState = ProcessAttack(state, hero.Index, action.TargetIndex, 9, true, consumeAP: false);
                     var zapHero = newState.Heroes[hero.Index];
                     newState = newState with
                     {
                         Heroes = newState.Heroes.SetItem(hero.Index, zapHero with
                         {
                             SpellPoints = zapHero.SpellPoints - 2
+                        })
+                    };
+                }
+                break;
+
+            case ActionType.FireballMonster:
+                if (hero.Class == HeroClass.Mage)
+                {
+                    // Fireball: strong spell, requires 6+ to hit, costs 5 spell points (no AP cost)
+                    newState = ProcessAttack(state, hero.Index, action.TargetIndex, 6, true, consumeAP: false);
+                    var fireballHero = newState.Heroes[hero.Index];
+                    newState = newState with
+                    {
+                        Heroes = newState.Heroes.SetItem(hero.Index, fireballHero with
+                        {
+                            SpellPoints = fireballHero.SpellPoints - 5
                         })
                     };
                 }
