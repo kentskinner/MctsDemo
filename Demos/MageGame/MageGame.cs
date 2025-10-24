@@ -34,7 +34,9 @@ public record MageHero(
     int ActionsRemaining,
     int ZapRange,         // Mage only: range for Zap ability
     int TeleportRange,    // Mage only: range for Teleport ability
-    bool HasExited        // True if hero has exited the map
+    bool HasExited,       // True if hero has exited the map
+    int SpellPoints,      // Mage only: spell points from CAST action (0-6, where 1=miscast)
+    bool HasCast          // Mage only: true if CAST action used this activation
 );
 
 public record MageMonster(
@@ -60,8 +62,9 @@ public enum ActionType
     ActivateHero,   // Choose which hero to activate
     MoveNorth, MoveSouth, MoveEast, MoveWest,
     Attack,         // Regular heroes only
-    ZapMonster,     // Mage only - ranged attack with hit chance
-    TeleportHero,   // Mage only - teleport ally
+    Cast,           // Mage only - roll 1d6 for spell points (once per activation)
+    ZapMonster,     // Mage only - ranged attack with hit chance (costs 2 spell points)
+    TeleportHero,   // Mage only - teleport ally (costs 4 spell points)
     EndTurn
 }
 
@@ -83,7 +86,8 @@ public record MageGameState(
     double AccumulatedReward,
     ImmutableHashSet<(int, int)> Walls,
     PendingAttack? AttackResolution,
-    bool ActiveHeroHasMoved  // Track if active hero used a move action this activation
+    bool ActiveHeroHasMoved,     // Track if active hero used a move action this activation
+    int? PendingCastHeroIndex    // Track which hero is casting (waiting for 1d6 roll)
 );
 
 public class MageTacticalGame : IGameModel<MageGameState, MageAction>
@@ -112,11 +116,11 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     public MageGameState InitialState()
     {
         // Create heroes - including a Mage with special abilities
-        // Mage: AttackScore=0 (can't attack), ZapRange=2, TeleportRange=2
+        // Mage: AttackScore=0 (can't attack), ZapRange=2, TeleportRange=2, SpellPoints=0, HasCast=false
         var heroes = ImmutableList.Create(
-            new MageHero(0, HeroClass.Warrior, 0, 0, HeroStatus.Healthy, 7, 1, 2, 0, 0, false),
-            new MageHero(1, HeroClass.Mage, 1, 0, HeroStatus.Healthy, 0, 1, 2, 3, 2, false),
-            new MageHero(2, HeroClass.Rogue, 0, 1, HeroStatus.Healthy, 8, 2, 2, 0, 0, false)
+            new MageHero(0, HeroClass.Warrior, 0, 0, HeroStatus.Healthy, 7, 1, 2, 0, 0, false, 0, false),
+            new MageHero(1, HeroClass.Mage, 1, 0, HeroStatus.Healthy, 0, 1, 2, 2, 2, false, 0, false),
+            new MageHero(2, HeroClass.Rogue, 0, 1, HeroStatus.Healthy, 8, 2, 2, 0, 0, false, 0, false)
         );
 
         // 5x5 grid with central wall
@@ -136,7 +140,8 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             AccumulatedReward: 0.0,
             Walls: walls,
             AttackResolution: null,
-            ActiveHeroHasMoved: false
+            ActiveHeroHasMoved: false,
+            PendingCastHeroIndex: null
         );
 
         ValidateDecisionStateHasActions(s, "InitialState()");
@@ -146,11 +151,11 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     private string SummarizeState(MageGameState s)
     {
         string heroes = string.Join(",",
-            s.Heroes.Select(h => $"{h.Index}:{h.Class}@({h.X},{h.Y}) S={h.Status} AP={h.ActionsRemaining} Ex={h.HasExited}"));
+            s.Heroes.Select(h => $"{h.Index}:{h.Class}@({h.X},{h.Y}) S={h.Status} AP={h.ActionsRemaining} SP={h.SpellPoints} Ex={h.HasExited}"));
         string mons = string.Join(",",
             s.Monsters.Where(m => m.IsAlive).Select(m => $"{m.Index}:{m.Type}@({m.X},{m.Y})"));
         return $"Phase={s.CurrentPhase} Turn={s.TurnCount} AH={s.ActiveHeroIndex} " +
-               $"Moved?={s.ActiveHeroHasMoved} AttackRes?={(s.AttackResolution != null)} " +
+               $"Moved?={s.ActiveHeroHasMoved} AttackRes?={(s.AttackResolution != null)} PendCast?={s.PendingCastHeroIndex} " +
                $"Exit=({s.ExitX},{s.ExitY}) | H=[{heroes}] | M=[{mons}]";
     }
 
@@ -162,12 +167,13 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
         // Hero selection step
         if (s.ActiveHeroIndex < 0)
-            return s.Heroes.Any(h => h.Status != HeroStatus.Dead && !h.HasExited && h.ActionsRemaining > 0);
+            return s.Heroes.Any(h => h.Status != HeroStatus.Dead && !h.HasExited && (h.ActionsRemaining > 0 || h.SpellPoints > 0));
 
         if (s.ActiveHeroIndex >= s.Heroes.Count) return false;
 
         var h = s.Heroes[s.ActiveHeroIndex];
-        if (h.Status == HeroStatus.Dead || h.HasExited || h.ActionsRemaining <= 0) return false;
+        bool canAct = h.ActionsRemaining > 0 || h.SpellPoints > 0;
+        if (h.Status == HeroStatus.Dead || h.HasExited || !canAct) return false;
 
         // Movement (blocked by ActiveHeroHasMoved)
         if (!s.ActiveHeroHasMoved)
@@ -292,6 +298,10 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
     public bool IsChanceNode(in MageGameState state)
     {
+        // Cast spell point roll (1d6)
+        if (state.PendingCastHeroIndex != null)
+            return true;
+
         // Attack/Zap resolution
         if (state.AttackResolution != null)
             return true;
@@ -310,6 +320,31 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     public IEnumerable<(MageGameState outcome, double probability)> ChanceOutcomes(MageGameState state)
     {
         var list = new List<(MageGameState, double)>();
+
+        // Cast spell points (1d6: 1=miscast/0 points, 2-6 = that many points)
+        if (state.PendingCastHeroIndex != null)
+        {
+            int heroIndex = state.PendingCastHeroIndex.Value;
+            for (int roll = 1; roll <= 6; roll++)
+            {
+                int spellPoints = (roll == 1) ? 0 : roll;  // 1 = miscast, no points
+                var hero = state.Heroes[heroIndex];
+                var outcomeState = state with
+                {
+                    Heroes = state.Heroes.SetItem(heroIndex, hero with
+                    {
+                        SpellPoints = spellPoints,
+                        ActionsRemaining = hero.ActionsRemaining - 1
+                    }),
+                    PendingCastHeroIndex = null
+                };
+                // Advance to check if hero should be deactivated (if both AP and SP are 0)
+                // If hero still has SP, they'll remain active to use spells
+                list.Add((AdvanceToNextPhaseOrHero(outcomeState), 1.0 / 6.0));
+            }
+            ValidateChanceOutcomeList(state, list, "Cast");
+            return list;
+        }
 
         // Attack/Zap resolution
         if (state.AttackResolution != null)
@@ -586,15 +621,19 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         }
 
         var activeHero = state.Heroes[state.ActiveHeroIndex];
-        if (activeHero.Status == HeroStatus.Dead || activeHero.HasExited || activeHero.ActionsRemaining <= 0)
+
+        // Mages with spell points can still act even with 0 AP
+        bool canAct = activeHero.ActionsRemaining > 0 || activeHero.SpellPoints > 0;
+
+        if (activeHero.Status == HeroStatus.Dead || activeHero.HasExited || !canAct)
         {
             // Should have been advanced by AdvanceToNextPhaseOrHero; log if we still see it.
-            FailOrLog($"[LegalActions] Active hero cannot act (dead/exited/no AP). {SummarizeState(state)}");
+            FailOrLog($"[LegalActions] Active hero cannot act (dead/exited/no AP/spell points). {SummarizeState(state)}");
             return actions;
         }
 
-        // Movement
-        if (!state.ActiveHeroHasMoved)
+        // Movement - requires AP
+        if (!state.ActiveHeroHasMoved && activeHero.ActionsRemaining > 0)
         {
             var moves = new[]
             {
@@ -619,52 +658,67 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
         if (activeHero.Class == HeroClass.Mage)
         {
-            // Zap
-            foreach (var monster in state.Monsters.Where(m => m.IsAlive))
+            // Cast - can only use once per activation, requires AP
+            if (!activeHero.HasCast && activeHero.ActionsRemaining > 0)
             {
-                int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
-                if (distance <= activeHero.ZapRange && distance > 0)
+                actions.Add(new MageAction(ActionType.Cast));
+            }
+
+            // Zap - costs 2 spell points
+            if (activeHero.SpellPoints >= 2)
+            {
+                foreach (var monster in state.Monsters.Where(m => m.IsAlive))
                 {
-                    actions.Add(new MageAction(ActionType.ZapMonster, TargetIndex: monster.Index));
+                    int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
+                    if (distance <= activeHero.ZapRange && distance > 0)
+                    {
+                        actions.Add(new MageAction(ActionType.ZapMonster, TargetIndex: monster.Index));
+                    }
                 }
             }
 
-            // Teleport (self or co-located ally)
-            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && !h.HasExited))
+            // Teleport - costs 4 spell points (self or co-located ally)
+            if (activeHero.SpellPoints >= 4)
             {
-                bool canTeleport = (targetHero.Index == activeHero.Index) ||
-                                   (targetHero.X == activeHero.X && targetHero.Y == activeHero.Y);
+                foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && !h.HasExited))
+                {
+                    bool canTeleport = (targetHero.Index == activeHero.Index) ||
+                                       (targetHero.X == activeHero.X && targetHero.Y == activeHero.Y);
 
-                if (!canTeleport) continue;
+                    if (!canTeleport) continue;
 
-                for (int x = 0; x < _gridWidth; x++)
-                    for (int y = 0; y < _gridHeight; y++)
-                    {
-                        int destDistance = Math.Abs(targetHero.X - x) + Math.Abs(targetHero.Y - y);
-                        if (destDistance > 0 && destDistance <= activeHero.TeleportRange &&
-                            IsValidPosition(state, x, y) &&
-                            !state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y) &&
-                            !state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
+                    for (int x = 0; x < _gridWidth; x++)
+                        for (int y = 0; y < _gridHeight; y++)
                         {
-                            actions.Add(new MageAction(ActionType.TeleportHero, x, y, targetHero.Index));
+                            int destDistance = Math.Abs(targetHero.X - x) + Math.Abs(targetHero.Y - y);
+                            if (destDistance > 0 && destDistance <= activeHero.TeleportRange &&
+                                IsValidPosition(state, x, y) &&
+                                !state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y) &&
+                                !state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
+                            {
+                                actions.Add(new MageAction(ActionType.TeleportHero, x, y, targetHero.Index));
+                            }
                         }
-                    }
+                }
             }
         }
         else
         {
-            // Melee attack
-            foreach (var monster in state.Monsters.Where(m => m.IsAlive))
+            // Melee attack - requires AP
+            if (activeHero.ActionsRemaining > 0)
             {
-                int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
-                if (distance <= activeHero.Range)
+                foreach (var monster in state.Monsters.Where(m => m.IsAlive))
                 {
-                    actions.Add(new MageAction(ActionType.Attack, TargetIndex: monster.Index));
+                    int distance = Math.Abs(activeHero.X - monster.X) + Math.Abs(activeHero.Y - monster.Y);
+                    if (distance <= activeHero.Range)
+                    {
+                        actions.Add(new MageAction(ActionType.Attack, TargetIndex: monster.Index));
+                    }
                 }
             }
         }
 
-        // End turn is always legal for an active hero with AP>0
+        // End turn is always legal (to skip remaining AP/spell points)
         actions.Add(new MageAction(ActionType.EndTurn));
 
         // Final decision-state validation
@@ -696,10 +750,20 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 FailOrLog($"[Step] Expected ActivateHero but got {action.Type}. {SummarizeState(state)}");
         }
 
-        // Hero activation - just set the active hero, don't consume actions, reset move flag
+        // Hero activation - just set the active hero, don't consume actions, reset move flag and spell state
         if (action.Type == ActionType.ActivateHero)
         {
-            return state with { ActiveHeroIndex = action.TargetIndex, ActiveHeroHasMoved = false };
+            var activatingHero = state.Heroes[action.TargetIndex];
+            return state with
+            {
+                ActiveHeroIndex = action.TargetIndex,
+                ActiveHeroHasMoved = false,
+                Heroes = state.Heroes.SetItem(action.TargetIndex, activatingHero with
+                {
+                    SpellPoints = 0,
+                    HasCast = false
+                })
+            };
         }
 
         var hero = state.Heroes[state.ActiveHeroIndex];
@@ -741,29 +805,64 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                 }
                 break;
 
+            case ActionType.Cast:
+                if (hero.Class == HeroClass.Mage)
+                {
+                    // Set pending cast and mark HasCast = true
+                    // Don't advance to next phase - Cast will be resolved as chance node
+                    return state with
+                    {
+                        PendingCastHeroIndex = hero.Index,
+                        Heroes = state.Heroes.SetItem(hero.Index, hero with { HasCast = true }),
+                        AccumulatedReward = state.AccumulatedReward + reward
+                    };
+                }
+                break;
+
             case ActionType.ZapMonster:
                 if (hero.Class == HeroClass.Mage)
                 {
-                    // Mage zap uses lower attack score (harder to hit)
-                    newState = ProcessAttack(state, hero.Index, action.TargetIndex, 6, true);
+                    // Mage zap uses lower attack score (harder to hit), costs 2 spell points (no AP cost)
+                    newState = ProcessAttack(state, hero.Index, action.TargetIndex, 6, true, consumeAP: false);
+                    var zapHero = newState.Heroes[hero.Index];
+                    newState = newState with
+                    {
+                        Heroes = newState.Heroes.SetItem(hero.Index, zapHero with
+                        {
+                            SpellPoints = zapHero.SpellPoints - 2
+                        })
+                    };
                 }
                 break;
 
             case ActionType.TeleportHero:
                 if (hero.Class == HeroClass.Mage)
                 {
-                    newState = TeleportHero(state, action.TargetIndex, action.TargetX, action.TargetY);
+                    newState = TeleportHero(state, action.TargetIndex, action.TargetX, action.TargetY, consumeAP: false);
                     reward += CalculateMovementReward(state,
                         state.Heroes[action.TargetIndex].X, state.Heroes[action.TargetIndex].Y,
                         action.TargetX, action.TargetY);
                     // Teleport doesn't count as movement - Mage can still move after teleporting
+                    // Costs 4 spell points (no AP cost)
+                    var teleportMage = newState.Heroes[state.ActiveHeroIndex];
+                    newState = newState with
+                    {
+                        Heroes = newState.Heroes.SetItem(state.ActiveHeroIndex, teleportMage with
+                        {
+                            SpellPoints = teleportMage.SpellPoints - 4
+                        })
+                    };
                 }
                 break;
 
             case ActionType.EndTurn:
                 newState = state with
                 {
-                    Heroes = state.Heroes.SetItem(hero.Index, hero with { ActionsRemaining = 0 })
+                    Heroes = state.Heroes.SetItem(hero.Index, hero with
+                    {
+                        ActionsRemaining = 0,
+                        SpellPoints = 0  // Clear spell points when ending turn
+                    })
                 };
                 break;
         }
@@ -797,7 +896,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         return newState;
     }
 
-    private MageGameState TeleportHero(MageGameState state, int targetHeroIndex, int newX, int newY)
+    private MageGameState TeleportHero(MageGameState state, int targetHeroIndex, int newX, int newY, bool consumeAP = true)
     {
         var mageHero = state.Heroes[state.ActiveHeroIndex];
         var targetHero = state.Heroes[targetHeroIndex];
@@ -806,15 +905,13 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         // Special case: Mage teleporting herself
         if (targetHeroIndex == state.ActiveHeroIndex)
         {
+            var updatedMage = consumeAP
+                ? mageHero with { X = newX, Y = newY, ActionsRemaining = mageHero.ActionsRemaining - 1, HasExited = hasExited }
+                : mageHero with { X = newX, Y = newY, HasExited = hasExited };
+
             var newState = state with
             {
-                Heroes = state.Heroes.SetItem(targetHeroIndex, mageHero with
-                {
-                    X = newX,
-                    Y = newY,
-                    ActionsRemaining = mageHero.ActionsRemaining - 1,
-                    HasExited = hasExited
-                })
+                Heroes = state.Heroes.SetItem(targetHeroIndex, updatedMage)
             };
 
             // If mage exited, deactivate
@@ -827,26 +924,34 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         }
 
         // Normal case: Mage teleporting another hero
+        var updatedMageForNormal = consumeAP
+            ? mageHero with { ActionsRemaining = mageHero.ActionsRemaining - 1 }
+            : mageHero;
+
         var result = state with
         {
             Heroes = state.Heroes
-                .SetItem(state.ActiveHeroIndex, mageHero with { ActionsRemaining = mageHero.ActionsRemaining - 1 })
+                .SetItem(state.ActiveHeroIndex, updatedMageForNormal)
                 .SetItem(targetHeroIndex, targetHero with { X = newX, Y = newY, HasExited = hasExited })
         };
 
         return result;
     }
 
-    private MageGameState ProcessAttack(MageGameState state, int heroIndex, int monsterIndex, int attackScore, bool isZap)
+    private MageGameState ProcessAttack(MageGameState state, int heroIndex, int monsterIndex, int attackScore, bool isZap, bool consumeAP = true)
     {
         var hero = state.Heroes[heroIndex];
 
         // Create pending attack to be resolved as chance node
         var attack = new PendingAttack(heroIndex, monsterIndex, attackScore, isZap);
 
+        var newHero = consumeAP
+            ? hero with { ActionsRemaining = hero.ActionsRemaining - 1 }
+            : hero;
+
         return state with
         {
-            Heroes = state.Heroes.SetItem(heroIndex, hero with { ActionsRemaining = hero.ActionsRemaining - 1 }),
+            Heroes = state.Heroes.SetItem(heroIndex, newHero),
             AttackResolution = attack
         };
     }
@@ -890,17 +995,17 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         if (state.CurrentPhase != Phase.HeroAction)
             return state;
 
-        // If we have an active hero with actions remaining, no change
+        // If we have an active hero with actions or spell points remaining, no change
         if (state.ActiveHeroIndex >= 0)
         {
             var currentHero = state.Heroes[state.ActiveHeroIndex];
-            if (currentHero.ActionsRemaining > 0)
+            if (currentHero.ActionsRemaining > 0 || currentHero.SpellPoints > 0)
                 return state;
         }
 
-        // Current hero finished (or no active hero) - check if any heroes still have actions
+        // Current hero finished (or no active hero) - check if any heroes still have actions or spell points
         bool anyHeroesRemaining = state.Heroes.Any(h =>
-            h.Status != HeroStatus.Dead && !h.HasExited && h.ActionsRemaining > 0);
+            h.Status != HeroStatus.Dead && !h.HasExited && (h.ActionsRemaining > 0 || h.SpellPoints > 0));
 
         if (anyHeroesRemaining)
         {
