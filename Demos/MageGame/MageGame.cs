@@ -33,7 +33,8 @@ public record MageHero(
     int Range,            // Movement/ability range
     int ActionsRemaining,
     int ZapRange,         // Mage only: range for Zap ability
-    int TeleportRange     // Mage only: range for Teleport ability
+    int TeleportRange,    // Mage only: range for Teleport ability
+    bool HasExited        // True if hero has exited the map
 );
 
 public record MageMonster(
@@ -105,9 +106,9 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         // Create heroes - including a Mage with special abilities
         // Mage: AttackScore=0 (can't attack), ZapRange=3, TeleportRange=4
         var heroes = ImmutableList.Create(
-            new MageHero(0, HeroClass.Warrior, 0, 0, HeroStatus.Healthy, 7, 1, 2, 0, 0),
-            new MageHero(1, HeroClass.Mage, 1, 0, HeroStatus.Healthy, 0, 1, 2, 3, 4),
-            new MageHero(2, HeroClass.Rogue, 0, 1, HeroStatus.Healthy, 8, 2, 2, 0, 0)
+            new MageHero(0, HeroClass.Warrior, 0, 0, HeroStatus.Healthy, 7, 1, 2, 0, 0, false),
+            new MageHero(1, HeroClass.Mage, 1, 0, HeroStatus.Healthy, 0, 1, 2, 3, 4, false),
+            new MageHero(2, HeroClass.Rogue, 0, 1, HeroStatus.Healthy, 8, 2, 2, 0, 0, false)
         );
 
         // 5x5 grid with central wall
@@ -134,10 +135,10 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     public bool IsTerminal(in MageGameState state, out double terminalValue)
     {
         var s = state; // Copy to avoid ref issues in lambdas
-        
-        // Win: All living heroes reached exit
+
+        // Win: All living heroes exited
         var livingHeroes = s.Heroes.Where(h => h.Status != HeroStatus.Dead).ToList();
-        if (livingHeroes.Count > 0 && livingHeroes.All(h => h.X == s.ExitX && h.Y == s.ExitY))
+        if (livingHeroes.Count > 0 && livingHeroes.All(h => h.HasExited))
         {
             terminalValue = 100.0;
             return true;
@@ -246,7 +247,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             var noSpawnState = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = -1 };
             foreach (var hero in noSpawnState.Heroes)
             {
-                if (hero.Status != HeroStatus.Dead)
+                if (hero.Status != HeroStatus.Dead && !hero.HasExited)
                 {
                     noSpawnState = noSpawnState with
                     {
@@ -267,7 +268,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         var noSpawn = state with { CurrentPhase = Phase.HeroAction, ActiveHeroIndex = -1 };
         foreach (var hero in noSpawn.Heroes)
         {
-            if (hero.Status != HeroStatus.Dead)
+            if (hero.Status != HeroStatus.Dead && !hero.HasExited)
             {
                 noSpawn = noSpawn with
                 {
@@ -290,7 +291,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             };
             foreach (var hero in spawnState.Heroes)
             {
-                if (hero.Status != HeroStatus.Dead)
+                if (hero.Status != HeroStatus.Dead && !hero.HasExited)
                 {
                     spawnState = spawnState with
                     {
@@ -314,7 +315,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             };
             foreach (var hero in spawnState.Heroes)
             {
-                if (hero.Status != HeroStatus.Dead)
+                if (hero.Status != HeroStatus.Dead && !hero.HasExited)
                 {
                     spawnState = spawnState with
                     {
@@ -420,7 +421,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
         {
             foreach (var hero in state.Heroes)
             {
-                if (hero.Status != HeroStatus.Dead && hero.ActionsRemaining > 0)
+                if (hero.Status != HeroStatus.Dead && !hero.HasExited && hero.ActionsRemaining > 0)
                 {
                     yield return new MageAction(ActionType.ActivateHero, TargetIndex: hero.Index);
                 }
@@ -432,7 +433,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             yield break;
 
         var activeHero = state.Heroes[state.ActiveHeroIndex];
-        if (activeHero.Status == HeroStatus.Dead || activeHero.ActionsRemaining <= 0)
+        if (activeHero.Status == HeroStatus.Dead || activeHero.HasExited || activeHero.ActionsRemaining <= 0)
             yield break;
 
         // Movement actions - only if hero hasn't moved yet this activation
@@ -473,7 +474,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
             }
 
             // Teleport: Move another hero within range
-            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && h.Index != activeHero.Index))
+            foreach (var targetHero in state.Heroes.Where(h => h.Status != HeroStatus.Dead && !h.HasExited && h.Index != activeHero.Index))
             {
                 int heroDistance = Math.Abs(activeHero.X - targetHero.X) + Math.Abs(activeHero.Y - targetHero.Y);
                 if (heroDistance <= activeHero.TeleportRange)
@@ -486,7 +487,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
                             int destDistance = Math.Abs(targetHero.X - x) + Math.Abs(targetHero.Y - y);
                             if (destDistance > 0 && destDistance <= 3 && // Teleport up to 3 squares
                                 IsValidPosition(state, x, y) &&
-                                !state.Heroes.Any(h => h.Status != HeroStatus.Dead && h.X == x && h.Y == y) &&
+                                !state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y) &&
                                 !state.Monsters.Any(m => m.IsAlive && m.X == x && m.Y == y))
                             {
                                 yield return new MageAction(ActionType.TeleportHero, x, y, targetHero.Index);
@@ -596,13 +597,16 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     private MageGameState MoveHero(MageGameState state, int heroIndex, int newX, int newY)
     {
         var hero = state.Heroes[heroIndex];
+        var hasExited = (newX == state.ExitX && newY == state.ExitY);
+
         return state with
         {
             Heroes = state.Heroes.SetItem(heroIndex, hero with
             {
                 X = newX,
                 Y = newY,
-                ActionsRemaining = hero.ActionsRemaining - 1
+                ActionsRemaining = hero.ActionsRemaining - 1,
+                HasExited = hasExited
             })
         };
     }
@@ -611,12 +615,13 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
     {
         var mageHero = state.Heroes[state.ActiveHeroIndex];
         var targetHero = state.Heroes[targetHeroIndex];
+        var hasExited = (newX == state.ExitX && newY == state.ExitY);
 
         var newState = state with
         {
             Heroes = state.Heroes
                 .SetItem(state.ActiveHeroIndex, mageHero with { ActionsRemaining = mageHero.ActionsRemaining - 1 })
-                .SetItem(targetHeroIndex, targetHero with { X = newX, Y = newY })
+                .SetItem(targetHeroIndex, targetHero with { X = newX, Y = newY, HasExited = hasExited })
         };
 
         return newState;
@@ -685,7 +690,7 @@ public class MageTacticalGame : IGameModel<MageGameState, MageAction>
 
         // Current hero finished - check if any heroes still have actions
         bool anyHeroesRemaining = state.Heroes.Any(h =>
-            h.Status != HeroStatus.Dead && h.ActionsRemaining > 0);
+            h.Status != HeroStatus.Dead && !h.HasExited && h.ActionsRemaining > 0);
 
         if (anyHeroesRemaining)
         {

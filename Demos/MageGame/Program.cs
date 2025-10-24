@@ -93,7 +93,15 @@ class MageGameProgram
         Console.WriteLine($"Terminal Value: {terminalValue}");
         Console.WriteLine($"Accumulated Reward: {state.AccumulatedReward:F2}");
         Console.WriteLine($"Turns: {state.TurnCount}");
-        Console.WriteLine($"Heroes Alive: {state.Heroes.Count(h => h.Status != HeroStatus.Dead)}/{state.Heroes.Count}");
+        Console.WriteLine($"Heroes Alive: {state.Heroes.Count(h => h.Status != HeroStatus.Dead && !h.HasExited)}/{state.Heroes.Count}");
+        Console.WriteLine($"Heroes Exited: {state.Heroes.Count(h => h.HasExited)}/{state.Heroes.Count}");
+
+        // Show exit status for each hero
+        foreach (var hero in state.Heroes.Where(h => h.HasExited))
+        {
+            Console.WriteLine($"  {hero.Class} exited {hero.Status}");
+        }
+
         Console.WriteLine($"Monsters Alive: {state.Monsters.Count(m => m.IsAlive)}/{state.Monsters.Count}");
     }
 
@@ -112,9 +120,9 @@ class MageGameProgram
                 {
                     Console.Write("E");
                 }
-                else if (state.Heroes.Any(h => h.Status != HeroStatus.Dead && h.X == x && h.Y == y))
+                else if (state.Heroes.Any(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y))
                 {
-                    var hero = state.Heroes.First(h => h.Status != HeroStatus.Dead && h.X == x && h.Y == y);
+                    var hero = state.Heroes.First(h => (h.Status != HeroStatus.Dead && !h.HasExited) && h.X == x && h.Y == y);
                     char c = hero.Class switch
                     {
                         HeroClass.Warrior => 'W',
