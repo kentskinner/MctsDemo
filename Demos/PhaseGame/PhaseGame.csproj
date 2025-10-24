@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\TacticalSquad\TacticalSquadGame.cs" Link="TacticalSquadGame.cs" />
+    <Compile Include="PhaseBasedGame.cs" />
+    <Compile Include="PhaseGameSimulation.cs" />
+    <Compile Include="PhaseBasedProgram.cs" />
+    <!-- <Compile Include="AttackTestProgram.cs" /> -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Mcts\Mcts.csproj" />
+  </ItemGroup>
+
+</Project>

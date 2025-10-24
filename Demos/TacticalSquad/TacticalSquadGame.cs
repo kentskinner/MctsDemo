@@ -13,7 +13,8 @@ public enum HeroClass
 {
     Warrior,    // High HP, high damage, low speed
     Rogue,      // Medium HP, medium damage, high speed
-    Mage        // Low HP, high damage, medium speed
+    Mage,       // Low HP, high damage, medium speed
+    Elf         // Medium HP, medium damage, long range
 }
 
 /// <summary>
