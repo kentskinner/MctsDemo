@@ -687,53 +687,72 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         int distance = from.DistanceTo(to);
         if (distance <= 1) return true;  // Adjacent always has LOS
 
-        // Hills block LOS between ground hexes
+        // LOS only works along hex axes (not diagonal)
+        // Check if the path is along a single axis direction
+        int deltaQ = to.Q - from.Q;
+        int deltaR = to.R - from.R;
+
+        // Check if it's along one of the 6 hex directions
+        int dirIndex = -1;
+        for (int i = 0; i < 6; i++)
+        {
+            var direction = HexCoord.Directions[i];
+            // Check if delta is a multiple of this direction
+            if (deltaQ != 0 && direction.Q != 0 && deltaR != 0 && direction.R != 0)
+            {
+                // Both components non-zero - check if they're proportional
+                if (deltaQ * direction.R == deltaR * direction.Q)
+                {
+                    dirIndex = i;
+                    break;
+                }
+            }
+            else if (deltaQ == 0 && direction.Q == 0 && deltaR != 0 && direction.R != 0)
+            {
+                // Q is zero for both
+                dirIndex = i;
+                break;
+            }
+            else if (deltaR == 0 && direction.R == 0 && deltaQ != 0 && direction.Q != 0)
+            {
+                // R is zero for both
+                dirIndex = i;
+                break;
+            }
+        }
+
+        // If not along an axis, no LOS
+        if (dirIndex == -1)
+            return false;
+
+        // Trace along the axis checking for walls, buildings, and hills
+        var dir = HexCoord.Directions[dirIndex];
+        var current = from;
+
         bool fromOnHill = state.HillHexes.Contains(from);
         bool toOnHill = state.HillHexes.Contains(to);
 
-        // Use hex line algorithm to check intermediate hexes
         for (int i = 1; i < distance; i++)
         {
-            float t = i / (float)distance;
-            var interpolated = HexLerp(from, to, t);
-            
+            var next = current + dir;
+
+            // Check for wall blocking LOS
+            if (state.Walls.Contains(current.GetEdge(dirIndex)))
+                return false;
+
             // Buildings block LOS through (but not into the target hex)
-            if (i < distance - 1 && state.BuildingHexes.Contains(interpolated))
+            if (i < distance - 1 && state.BuildingHexes.Contains(next))
                 return false;
 
             // Hills block LOS between ground hexes
-            bool interpOnHill = state.HillHexes.Contains(interpolated);
-            if (interpOnHill && !fromOnHill && !toOnHill)
+            bool nextOnHill = state.HillHexes.Contains(next);
+            if (nextOnHill && !fromOnHill && !toOnHill)
                 return false;
+
+            current = next;
         }
 
         return true;
-    }
-
-    private HexCoord HexLerp(HexCoord a, HexCoord b, float t)
-    {
-        float q = a.Q + (b.Q - a.Q) * t;
-        float r = a.R + (b.R - a.R) * t;
-        return HexRound(q, r);
-    }
-
-    private HexCoord HexRound(float q, float r)
-    {
-        float s = -q - r;
-        int rq = (int)Math.Round(q);
-        int rr = (int)Math.Round(r);
-        int rs = (int)Math.Round(s);
-
-        float dq = Math.Abs(rq - q);
-        float dr = Math.Abs(rr - r);
-        float ds = Math.Abs(rs - s);
-
-        if (dq > dr && dq > ds)
-            rq = -rr - rs;
-        else if (dr > ds)
-            rr = -rq - rs;
-
-        return new HexCoord(rq, rr);
     }
 
     private HexGameState ResolveAttack(HexGameState state, int roll)
