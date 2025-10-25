@@ -6,8 +6,15 @@ using MageGame;
 
 class HexMageGameProgram
 {
-    static void Main()
+    static void Main(string[] args)
     {
+        // Check if running tests
+        if (args.Length > 0 && args[0] == "--test")
+        {
+            HexMageGame.Tests.ActionEconomyTests.RunAllTests();
+            return;
+        }
+
         Console.WriteLine("=== HEX MAGE GAME ===");
         Console.WriteLine("Tactical combat on a hex grid with terrain!");
         Console.WriteLine("Terrain: ~ = Water (impassable)");

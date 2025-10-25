@@ -255,7 +255,7 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         // Create heroes (all start at origin)
         var heroes = ImmutableList.Create(
             new HexHero(0, HeroClass.Warrior, new HexCoord(0, 3), HeroStatus.Healthy,
-                AttackScore: 8, Range: 1, ActionsRemaining: 2, AttackActionsRemaining: 1, ZapRange: 0, TeleportRange: 0,
+                AttackScore: 8, Range: 1, ActionsRemaining: 2, AttackActionsRemaining: 0, ZapRange: 0, TeleportRange: 0,
                 HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 5,
                 WarriorItems: ImmutableHashSet.Create(WarriorItem.BoneSword, WarriorItem.Shield, WarriorItem.Rage)),  // Warrior: 8+ attack, 5+ save, with all items
 
@@ -265,12 +265,12 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 WarriorItems: ImmutableHashSet<WarriorItem>.Empty),  // Mage: no attack, no defense (uses spells)
 
             new HexHero(2, HeroClass.Elf, new HexCoord(0, 4), HeroStatus.Healthy,
-                AttackScore: 8, Range: 2, ActionsRemaining: 2, AttackActionsRemaining: 1, ZapRange: 0, TeleportRange: 0,
+                AttackScore: 8, Range: 2, ActionsRemaining: 2, AttackActionsRemaining: 0, ZapRange: 0, TeleportRange: 0,
                 HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6,
                 WarriorItems: ImmutableHashSet<WarriorItem>.Empty),   // Elf: 8+ attack, range 2, 6+ save
 
             new HexHero(3, HeroClass.Thief, new HexCoord(0, 4), HeroStatus.Healthy,
-                AttackScore: 9, Range: 1, ActionsRemaining: 2, AttackActionsRemaining: 1, ZapRange: 0, TeleportRange: 0,
+                AttackScore: 9, Range: 1, ActionsRemaining: 2, AttackActionsRemaining: 0, ZapRange: 0, TeleportRange: 0,
                 HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6,
                 WarriorItems: ImmutableHashSet<WarriorItem>.Empty)   // Thief: 9+ attack, 6+ save
         );
@@ -434,9 +434,10 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         }
 
         // Attack (regular heroes only)
-        // Can attack if (has AP AND has attack actions) OR if Rage free attack is available
+        // Can attack if (has AP) OR (has bonus attack actions) OR if Rage free attack is available
+        // Normal attacks use AP; bonus attack actions from Nimble allow attacking without AP
         if (activeHero.Class != HeroClass.Mage &&
-            ((activeHero.ActionsRemaining > 0 && activeHero.AttackActionsRemaining > 0) || state.RageFreeAttackAvailable))
+            (activeHero.ActionsRemaining > 0 || activeHero.AttackActionsRemaining > 0 || state.RageFreeAttackAvailable))
         {
             foreach (var monster in state.Monsters.Where(m => m.IsAlive))
             {
@@ -621,10 +622,25 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 int modifier = GetAttackModifier(newState, attacker.Position, targetPos);
                 int effectiveAttackScore = Math.Max(2, attacker.AttackScore + modifier);
 
-                // Check if this is a Rage free attack (don't consume AP or attack actions)
+                // Determine what to consume:
+                // 1. Rage free attack: consume nothing
+                // 2. Have AP: consume 1 AP
+                // 3. No AP but have bonus attack actions: consume 1 attack action
                 bool isRageAttack = newState.RageFreeAttackAvailable;
-                int apCostAttack = isRageAttack ? 0 : 1;
-                int attackActionCost = isRageAttack ? 0 : 1;
+                int apCostAttack = 0;
+                int attackActionCost = 0;
+
+                if (!isRageAttack)
+                {
+                    if (attacker.ActionsRemaining > 0)
+                    {
+                        apCostAttack = 1;  // Normal attack uses AP
+                    }
+                    else if (attacker.AttackActionsRemaining > 0)
+                    {
+                        attackActionCost = 1;  // Use bonus attack action when out of AP
+                    }
+                }
 
                 newState = newState with
                 {
@@ -1100,9 +1116,9 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             var hero = newHeroes[i];
             if (hero.IsAlive && !hero.HasExited)
             {
-                // Reset AP and attack actions for new turn
-                int attackActions = hero.Class == HeroClass.Mage ? 0 : 1;  // Non-mages get 1 attack action per turn
-                newHeroes = newHeroes.SetItem(i, hero with { ActionsRemaining = 2, AttackActionsRemaining = attackActions });
+                // Reset AP for new turn
+                // Attack actions remain from Nimble buffs (don't reset to 0)
+                newHeroes = newHeroes.SetItem(i, hero with { ActionsRemaining = 2 });
             }
         }
 
