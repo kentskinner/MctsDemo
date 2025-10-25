@@ -145,6 +145,23 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 {
     private readonly int _maxTurns;
 
+    // 2d6 probability table: probability of rolling >= target number
+    private static readonly Dictionary<int, double> Attack2d6Probability = new()
+    {
+        { 2, 36.0/36.0 },   // 100% - always succeed
+        { 3, 35.0/36.0 },   // 97.2%
+        { 4, 33.0/36.0 },   // 91.7%
+        { 5, 30.0/36.0 },   // 83.3%
+        { 6, 26.0/36.0 },   // 72.2%
+        { 7, 21.0/36.0 },   // 58.3%
+        { 8, 15.0/36.0 },   // 41.7%
+        { 9, 10.0/36.0 },   // 27.8%
+        { 10, 6.0/36.0 },   // 16.7%
+        { 11, 3.0/36.0 },   // 8.3%
+        { 12, 1.0/36.0 },   // 2.8%
+        { 13, 0.0/36.0 }    // 0% - impossible
+    };
+
     public HexTacticalGame(int maxTurns = 15)
     {
         _maxTurns = maxTurns;
@@ -254,13 +271,25 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
     public IEnumerable<(HexGameState outcome, double probability)> ChanceOutcomes(HexGameState state)
     {
-        // Attack resolution (d6 roll)
+        // Attack resolution (2d6 roll - hit or miss)
         if (state.AttackResolution != null)
         {
-            for (int roll = 1; roll <= 6; roll++)
+            int attackScore = state.AttackResolution.AttackScore;
+            double hitProbability = Attack2d6Probability.GetValueOrDefault(attackScore, 0.0);
+            double missProbability = 1.0 - hitProbability;
+
+            // Hit outcome
+            if (hitProbability > 0)
             {
-                var newState = ResolveAttack(state, roll);
-                yield return (newState, 1.0 / 6.0);
+                var hitState = ResolveAttack(state, hit: true);
+                yield return (hitState, hitProbability);
+            }
+
+            // Miss outcome
+            if (missProbability > 0)
+            {
+                var missState = ResolveAttack(state, hit: false);
+                yield return (missState, missProbability);
             }
             yield break;
         }
@@ -582,15 +611,18 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                     }
                 }
 
-                // Deduct spell points from caster
-                var teleporterAfter = newState.Heroes[newState.ActiveHeroIndex];
-                newState = newState with
+                // Deduct spell points from caster (if still active)
+                if (newState.ActiveHeroIndex != -1)
                 {
-                    Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, teleporterAfter with
+                    var teleporterAfter = newState.Heroes[newState.ActiveHeroIndex];
+                    newState = newState with
                     {
-                        SpellPoints = teleporterAfter.SpellPoints - 4
-                    })
-                };
+                        Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, teleporterAfter with
+                        {
+                            SpellPoints = teleporterAfter.SpellPoints - 4
+                        })
+                    };
+                }
                 break;
 
             case HexActionType.EndTurn:
@@ -755,13 +787,13 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         return true;
     }
 
-    private HexGameState ResolveAttack(HexGameState state, int roll)
+    private HexGameState ResolveAttack(HexGameState state, bool hit)
     {
         var attack = state.AttackResolution!;
         
         var newState = state with { AttackResolution = null };
-        
-        if (roll >= attack.AttackScore)
+
+        if (hit)
         {
             // Hit! Monster dies
             var deadMonster = newState.Monsters[attack.DefenderIndex];
