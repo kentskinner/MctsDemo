@@ -16,7 +16,7 @@ namespace MageGame;
 
 // ============== ENUMS ==============
 
-public enum HeroClass { Warrior, Mage, Rogue }
+public enum HeroClass { Warrior, Mage, Elf, Thief }
 
 public enum HeroStatus { Healthy, Injured, Dead }
 
@@ -169,11 +169,11 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
     {
         { 0, 1.0 },   // No defense - always penetrates
         { 1, 0.0 },   // 1+ save - always blocks (0% penetrate)
-        { 2, 1.0/6.0 },   // 2+ save - 16.7% block (83.3% penetrate, only 1s fail the save)
-        { 3, 2.0/6.0 },   // 3+ save - 33.3% block (66.7% penetrate, 1-2 fail)
-        { 4, 3.0/6.0 },   // 4+ save - 50% block (50% penetrate, 1-3 fail)
-        { 5, 4.0/6.0 },   // 5+ save - 66.7% block (33.3% penetrate, 1-4 fail)
-        { 6, 5.0/6.0 },   // 6+ save - 83.3% block (16.7% penetrate, 1-5 fail)
+        { 2, 1.0/6.0 },   // 2+ save - 16.7% penetrate (only 1s fail the save)
+        { 3, 2.0/6.0 },   // 3+ save - 33.3% penetrate (1-2 fail)
+        { 4, 3.0/6.0 },   // 4+ save - 50% penetrate (1-3 fail)
+        { 5, 4.0/6.0 },   // 5+ save - 66.7% penetrate (1-4 fail)
+        { 6, 5.0/6.0 },   // 6+ save - 83.3% penetrate (1-5 fail)
         { 7, 1.0 }    // 7+ save - impossible to save, always penetrates
     };
 
@@ -234,17 +234,21 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
         // Create heroes (all start at origin)
         var heroes = ImmutableList.Create(
-            new HexHero(0, HeroClass.Warrior, new HexCoord(0, 3), HeroStatus.Healthy, 
-                AttackScore: 6, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 4),  // Warrior: 4+ save
+            new HexHero(0, HeroClass.Warrior, new HexCoord(0, 3), HeroStatus.Healthy,
+                AttackScore: 8, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 5),  // Warrior: 4+ save
 
             new HexHero(1, HeroClass.Mage, new HexCoord(0, 3), HeroStatus.Healthy,
                 AttackScore: 0, Range: 0, ActionsRemaining: 2, ZapRange: 2, TeleportRange: 2,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6),  // Mage: 6+ save (fragile)
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 0),  // Mage: 6+ save (fragile)
 
-            new HexHero(2, HeroClass.Rogue, new HexCoord(0, 4), HeroStatus.Healthy,
-                AttackScore: 7, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 5)   // Rogue: 5+ save
+            new HexHero(2, HeroClass.Elf, new HexCoord(0, 4), HeroStatus.Healthy,
+                AttackScore: 8, Range: 2, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6),   // Elf: 8+ attack, range 2, 6+ save
+
+            new HexHero(3, HeroClass.Thief, new HexCoord(0, 4), HeroStatus.Healthy,
+                AttackScore: 9, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6)   // Thief: 9+ attack, 6+ save
         );
 
         // Initial monster
@@ -1064,7 +1068,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 {
                     HeroClass.Warrior => 'W',
                     HeroClass.Mage => 'M',
-                    HeroClass.Rogue => 'R',
+                    HeroClass.Elf => 'L',  // L for eLf
+                    HeroClass.Thief => 'F',  // F for thieF
                     _ => '?'
                 };
             }
