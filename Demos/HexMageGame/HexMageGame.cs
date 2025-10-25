@@ -101,7 +101,8 @@ public record HexHero(
     int TeleportRange,
     bool HasExited,
     int SpellPoints,      // Mage only
-    bool HasCast          // Mage only
+    bool HasCast,         // Mage only
+    int DefenseValue      // 1d6 roll needed to save (4+, 5+, 6+, or 0 for no defense)
 )
 {
     public bool IsAlive => Status != HeroStatus.Dead;
@@ -110,7 +111,8 @@ public record HexHero(
 public record HexMonster(
     int Index,
     HexCoord Position,
-    bool IsAlive
+    bool IsAlive,
+    int DefenseValue      // 1d6 roll needed to save (4+, 5+, 6+, or 0 for no defense)
 );
 
 public record HexAction(
@@ -119,7 +121,7 @@ public record HexAction(
     HexCoord? TargetPosition = null
 );
 
-public record PendingHexAttack(int AttackerIndex, int DefenderIndex, int AttackScore);
+public record PendingHexAttack(int AttackerIndex, int DefenderIndex, int AttackScore, bool IgnoreDefense);
 
 public record HexGameState(
     ImmutableList<HexHero> Heroes,
@@ -161,6 +163,32 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         { 12, 1.0/36.0 },   // 2.8%
         { 13, 0.0/36.0 }    // 0% - impossible
     };
+
+    // 1d6 defense save probabilities (probability attack penetrates armor)
+    private static readonly Dictionary<int, double> Defense1d6Probability = new()
+    {
+        { 0, 1.0 },   // No defense - always penetrates
+        { 1, 0.0 },   // 1+ save - always blocks (0% penetrate)
+        { 2, 1.0/6.0 },   // 2+ save - 16.7% block (83.3% penetrate, only 1s fail the save)
+        { 3, 2.0/6.0 },   // 3+ save - 33.3% block (66.7% penetrate, 1-2 fail)
+        { 4, 3.0/6.0 },   // 4+ save - 50% block (50% penetrate, 1-3 fail)
+        { 5, 4.0/6.0 },   // 5+ save - 66.7% block (33.3% penetrate, 1-4 fail)
+        { 6, 5.0/6.0 },   // 6+ save - 83.3% block (16.7% penetrate, 1-5 fail)
+        { 7, 1.0 }    // 7+ save - impossible to save, always penetrates
+    };
+
+    // Combined attack + defense probability
+    // Returns probability of attack hitting AND penetrating defense
+    private double GetCombinedHitProbability(int attackScore, int defenseValue, bool ignoreDefense)
+    {
+        double attackProb = Attack2d6Probability.GetValueOrDefault(attackScore, 0.0);
+
+        if (ignoreDefense || defenseValue == 0)
+            return attackProb;
+
+        double penetrateProb = Defense1d6Probability.GetValueOrDefault(defenseValue, 0.0);
+        return attackProb * penetrateProb;
+    }
 
     public HexTacticalGame(int maxTurns = 15)
     {
@@ -208,20 +236,20 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         var heroes = ImmutableList.Create(
             new HexHero(0, HeroClass.Warrior, new HexCoord(0, 3), HeroStatus.Healthy, 
                 AttackScore: 6, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false),
-            
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 4),  // Warrior: 4+ save
+
             new HexHero(1, HeroClass.Mage, new HexCoord(0, 3), HeroStatus.Healthy,
                 AttackScore: 0, Range: 0, ActionsRemaining: 2, ZapRange: 2, TeleportRange: 2,
-                HasExited: false, SpellPoints: 0, HasCast: false),
-            
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6),  // Mage: 6+ save (fragile)
+
             new HexHero(2, HeroClass.Rogue, new HexCoord(0, 4), HeroStatus.Healthy,
                 AttackScore: 7, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false)
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 5)   // Rogue: 5+ save
         );
 
         // Initial monster
         var monsters = ImmutableList.Create(
-            new HexMonster(0, new HexCoord(3, 4), IsAlive: true)
+            new HexMonster(0, new HexCoord(3, 4), IsAlive: true, DefenseValue: 5)  // Monsters: 5+ save
         );
 
         return new HexGameState(
@@ -271,21 +299,26 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
     public IEnumerable<(HexGameState outcome, double probability)> ChanceOutcomes(HexGameState state)
     {
-        // Attack resolution (2d6 roll - hit or miss)
+        // Attack resolution (2d6 attack + 1d6 defense combined)
         if (state.AttackResolution != null)
         {
-            int attackScore = state.AttackResolution.AttackScore;
-            double hitProbability = Attack2d6Probability.GetValueOrDefault(attackScore, 0.0);
+            var attack = state.AttackResolution;
+            var target = state.Monsters[attack.DefenderIndex];
+
+            double hitProbability = GetCombinedHitProbability(
+                attack.AttackScore,
+                target.DefenseValue,
+                attack.IgnoreDefense);
             double missProbability = 1.0 - hitProbability;
 
-            // Hit outcome
+            // Hit outcome (attack hits AND penetrates defense)
             if (hitProbability > 0)
             {
                 var hitState = ResolveAttack(state, hit: true);
                 yield return (hitState, hitProbability);
             }
 
-            // Miss outcome
+            // Miss outcome (attack misses OR defense saves)
             if (missProbability > 0)
             {
                 var missState = ResolveAttack(state, hit: false);
@@ -531,7 +564,11 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
                 newState = newState with
                 {
-                    AttackResolution = new PendingHexAttack(newState.ActiveHeroIndex, action.TargetIndex, effectiveAttackScore),
+                    AttackResolution = new PendingHexAttack(
+                        newState.ActiveHeroIndex,
+                        action.TargetIndex,
+                        effectiveAttackScore,
+                        IgnoreDefense: false),  // Normal attacks use defense
                     Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, attacker with
                     {
                         ActionsRemaining = attacker.ActionsRemaining - 1
@@ -556,7 +593,11 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 
                 newState = newState with
                 {
-                    AttackResolution = new PendingHexAttack(newState.ActiveHeroIndex, action.TargetIndex, zapAttackScore),
+                    AttackResolution = new PendingHexAttack(
+                        newState.ActiveHeroIndex,
+                        action.TargetIndex,
+                        zapAttackScore,
+                        IgnoreDefense: true),  // Zap ignores defense (magic)
                     Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, zapper with
                     {
                         SpellPoints = zapper.SpellPoints - 2
@@ -572,7 +613,11 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 
                 newState = newState with
                 {
-                    AttackResolution = new PendingHexAttack(newState.ActiveHeroIndex, action.TargetIndex, fireballAttackScore),
+                    AttackResolution = new PendingHexAttack(
+                        newState.ActiveHeroIndex,
+                        action.TargetIndex,
+                        fireballAttackScore,
+                        IgnoreDefense: true),  // Fireball ignores defense (magic)
                     Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, fireballHero with
                     {
                         SpellPoints = fireballHero.SpellPoints - 5
@@ -918,8 +963,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             ? nearExit[Random.Shared.Next(nearExit.Count)]
             : validPositions[Random.Shared.Next(validPositions.Count)];
 
-        var newMonster = new HexMonster(state.Monsters.Count, spawnPos, true);
-        
+        var newMonster = new HexMonster(state.Monsters.Count, spawnPos, IsAlive: true, DefenseValue: 5);  // Monsters: 5+ save
+
         return state with
         {
             Monsters = state.Monsters.Add(newMonster)
