@@ -34,16 +34,6 @@ public enum HexActionType
     EndTurn
 }
 
-public enum HexTerrain
-{
-    Ground,      // Normal passable terrain
-    Water,       // Impassable
-    Hill,        // +1 defense bonus, costs 2 AP to enter
-    Tree,        // +2 defense bonus, blocks LOS
-    TreeOnHill,  // +3 defense bonus, costs 2 AP, blocks LOS
-    Building     // +3 defense bonus, blocks LOS, costs 2 AP
-}
-
 // ============== HEX COORDINATE SYSTEM ==============
 
 /// <summary>
@@ -139,7 +129,10 @@ public record HexGameState(
     Phase CurrentPhase,
     HexCoord ExitPosition,
     double AccumulatedReward,
-    ImmutableDictionary<HexCoord, HexTerrain> TerrainMap,
+    ImmutableHashSet<HexCoord> WaterHexes,
+    ImmutableHashSet<HexCoord> HillHexes,
+    ImmutableHashSet<HexCoord> TreeHexes,
+    ImmutableHashSet<HexCoord> BuildingHexes,
     ImmutableHashSet<(HexCoord, HexCoord)> Walls,
     PendingHexAttack? AttackResolution,
     bool ActiveHeroHasMoved,
@@ -159,36 +152,33 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
     public HexGameState InitialState()
     {
-        // Create a hex map with terrain variety (7x7 hex region)
-        var terrainMap = new Dictionary<HexCoord, HexTerrain>();
-        
-        for (int q = 0; q <= 6; q++)
+        // Create separate sets for each terrain feature
+        var waterHexes = new HashSet<HexCoord>
         {
-            for (int r = 0; r <= 6; r++)
-            {
-                terrainMap[new HexCoord(q, r)] = HexTerrain.Ground;
-            }
-        }
+            new HexCoord(1, 1),
+            new HexCoord(2, 1),
+            new HexCoord(1, 2)
+        };
 
-        // Add water (small lake)
-        terrainMap[new HexCoord(1, 1)] = HexTerrain.Water;
-        terrainMap[new HexCoord(2, 1)] = HexTerrain.Water;
-        terrainMap[new HexCoord(1, 2)] = HexTerrain.Water;
+        var hillHexes = new HashSet<HexCoord>
+        {
+            new HexCoord(3, 2),
+            new HexCoord(4, 3),
+            new HexCoord(5, 2)  // Hill with tree
+        };
 
-        // Add hills
-        terrainMap[new HexCoord(3, 2)] = HexTerrain.Hill;
-        terrainMap[new HexCoord(4, 3)] = HexTerrain.Hill;
+        var treeHexes = new HashSet<HexCoord>
+        {
+            new HexCoord(2, 4),
+            new HexCoord(3, 5),
+            new HexCoord(5, 2)  // Tree on hill
+        };
 
-        // Add trees
-        terrainMap[new HexCoord(2, 4)] = HexTerrain.Tree;
-        terrainMap[new HexCoord(3, 5)] = HexTerrain.Tree;
-
-        // Add tree on hill (strategic high ground)
-        terrainMap[new HexCoord(5, 2)] = HexTerrain.TreeOnHill;
-
-        // Add buildings
-        terrainMap[new HexCoord(2, 3)] = HexTerrain.Building;
-        terrainMap[new HexCoord(4, 4)] = HexTerrain.Building;
+        var buildingHexes = new HashSet<HexCoord>
+        {
+            new HexCoord(2, 3),
+            new HexCoord(4, 4)
+        };
 
         // Add walls (on edges between hexes)
         var walls = new HashSet<(HexCoord, HexCoord)>
@@ -225,7 +215,10 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             CurrentPhase: Phase.HeroAction,
             ExitPosition: new HexCoord(6, 6),
             AccumulatedReward: 0,
-            TerrainMap: terrainMap.ToImmutableDictionary(),
+            WaterHexes: waterHexes.ToImmutableHashSet(),
+            HillHexes: hillHexes.ToImmutableHashSet(),
+            TreeHexes: treeHexes.ToImmutableHashSet(),
+            BuildingHexes: buildingHexes.ToImmutableHashSet(),
             Walls: walls.ToImmutableHashSet(),
             AttackResolution: null,
             ActiveHeroHasMoved: false,
@@ -336,12 +329,11 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                     continue;
 
                 // Check terrain (water is impassable)
-                if (state.TerrainMap.TryGetValue(newPos, out var terrain) && terrain == HexTerrain.Water)
+                if (state.WaterHexes.Contains(newPos))
                     continue;
 
-                // Check if move costs more AP than available
-                int moveCost = GetMovementCost(terrain);
-                if (moveCost > activeHero.ActionsRemaining)
+                // All non-water hexes cost 1 AP
+                if (activeHero.ActionsRemaining < 1)
                     continue;
 
                 actions.Add(new HexAction((HexActionType)(HexActionType.MoveNE + dir)));
@@ -421,7 +413,7 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                             continue;
 
                         // Check terrain (can't teleport into water)
-                        if (state.TerrainMap.TryGetValue(destPos, out var terrain) && terrain == HexTerrain.Water)
+                        if (state.WaterHexes.Contains(destPos))
                             continue;
 
                         actions.Add(new HexAction(HexActionType.TeleportHero, 
@@ -467,9 +459,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 var hero = newState.Heroes[newState.ActiveHeroIndex];
                 var newPos = hero.Position + HexCoord.Directions[direction];
                 
-                // Get terrain cost
-                var terrain = newState.TerrainMap.TryGetValue(newPos, out var t) ? t : HexTerrain.Ground;
-                int apCost = GetMovementCost(terrain);
+                // All non-water hexes cost 1 AP
+                int apCost = 1;
 
                 // Check if exiting
                 bool exitingNow = (newPos == newState.ExitPosition);
@@ -505,9 +496,9 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 var attacker = newState.Heroes[newState.ActiveHeroIndex];
                 var targetPos = newState.Monsters[action.TargetIndex].Position;
                 
-                // Get defense bonus from terrain
-                int defenseBonus = GetDefenseBonus(newState, targetPos);
-                int effectiveAttackScore = Math.Max(2, attacker.AttackScore + defenseBonus);
+                // Calculate attack modifier based on terrain and positioning
+                int modifier = GetAttackModifier(newState, attacker.Position, targetPos);
+                int effectiveAttackScore = Math.Max(2, attacker.AttackScore + modifier);
 
                 newState = newState with
                 {
@@ -531,8 +522,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             case HexActionType.ZapMonster:
                 var zapper = newState.Heroes[newState.ActiveHeroIndex];
                 var zapTarget = newState.Monsters[action.TargetIndex].Position;
-                int zapDefense = GetDefenseBonus(newState, zapTarget);
-                int zapAttackScore = Math.Max(2, 9 + zapDefense);
+                int zapModifier = GetAttackModifier(newState, zapper.Position, zapTarget);
+                int zapAttackScore = Math.Max(2, 9 + zapModifier);
                 
                 newState = newState with
                 {
@@ -547,8 +538,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             case HexActionType.FireballMonster:
                 var fireballHero = newState.Heroes[newState.ActiveHeroIndex];
                 var fireballTarget = newState.Monsters[action.TargetIndex].Position;
-                int fireballDefense = GetDefenseBonus(newState, fireballTarget);
-                int fireballAttackScore = Math.Max(2, 6 + fireballDefense);
+                int fireballModifier = GetAttackModifier(newState, fireballHero.Position, fireballTarget);
+                int fireballAttackScore = Math.Max(2, 6 + fireballModifier);
                 
                 newState = newState with
                 {
@@ -646,30 +637,49 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
     // ============== HELPER METHODS ==============
 
-    private int GetMovementCost(HexTerrain terrain)
+    private int GetAttackModifier(HexGameState state, HexCoord attackerPos, HexCoord targetPos)
     {
-        return terrain switch
-        {
-            HexTerrain.Hill => 2,
-            HexTerrain.TreeOnHill => 2,
-            HexTerrain.Building => 2,
-            _ => 1
-        };
-    }
+        int modifier = 0;
 
-    private int GetDefenseBonus(HexGameState state, HexCoord position)
-    {
-        if (!state.TerrainMap.TryGetValue(position, out var terrain))
-            return 0;
+        // Attacker on hill, target not: -1 (easier to hit)
+        bool attackerOnHill = state.HillHexes.Contains(attackerPos);
+        bool targetOnHill = state.HillHexes.Contains(targetPos);
+        if (attackerOnHill && !targetOnHill)
+            modifier -= 1;
 
-        return terrain switch
+        // Attacking on or through trees: +1 (harder to hit)
+        bool attackerInTrees = state.TreeHexes.Contains(attackerPos);
+        bool targetInTrees = state.TreeHexes.Contains(targetPos);
+        if (attackerInTrees || targetInTrees)
+            modifier += 1;
+
+        // Target in building: +1 (harder to hit)
+        if (state.BuildingHexes.Contains(targetPos))
+            modifier += 1;
+
+        // Adjacent allies with LOS (flanking bonus): -1 each
+        var attacker = state.Heroes.FirstOrDefault(h => h.Position == attackerPos);
+        if (attacker != null)
         {
-            HexTerrain.Hill => 1,
-            HexTerrain.Tree => 2,
-            HexTerrain.TreeOnHill => 3,
-            HexTerrain.Building => 3,
-            _ => 0
-        };
+            foreach (var ally in state.Heroes.Where(h => h.IsAlive && h.Index != attacker.Index))
+            {
+                // Check if ally is adjacent to target
+                if (ally.Position.DistanceTo(targetPos) == 1)
+                {
+                    // Check if ally has LOS to target
+                    if (HasLineOfSight(state, ally.Position, targetPos))
+                    {
+                        // Check if ally is not in attacker's hex
+                        if (ally.Position != attackerPos)
+                        {
+                            modifier -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        return modifier;
     }
 
     private bool HasLineOfSight(HexGameState state, HexCoord from, HexCoord to)
@@ -677,17 +687,24 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         int distance = from.DistanceTo(to);
         if (distance <= 1) return true;  // Adjacent always has LOS
 
-        // Use hex line algorithm
+        // Hills block LOS between ground hexes
+        bool fromOnHill = state.HillHexes.Contains(from);
+        bool toOnHill = state.HillHexes.Contains(to);
+
+        // Use hex line algorithm to check intermediate hexes
         for (int i = 1; i < distance; i++)
         {
             float t = i / (float)distance;
             var interpolated = HexLerp(from, to, t);
             
-            if (state.TerrainMap.TryGetValue(interpolated, out var terrain))
-            {
-                if (terrain == HexTerrain.Tree || terrain == HexTerrain.TreeOnHill || terrain == HexTerrain.Building)
-                    return false;
-            }
+            // Buildings block LOS through (but not into the target hex)
+            if (i < distance - 1 && state.BuildingHexes.Contains(interpolated))
+                return false;
+
+            // Hills block LOS between ground hexes
+            bool interpOnHill = state.HillHexes.Contains(interpolated);
+            if (interpOnHill && !fromOnHill && !toOnHill)
+                return false;
         }
 
         return true;
@@ -819,22 +836,26 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         if (Random.Shared.NextDouble() > 0.8)
             return state;
 
-        // Find valid spawn positions (not water, not occupied)
+        // Find valid spawn positions (not water, not occupied, within map bounds)
         var validPositions = new List<HexCoord>();
         
-        foreach (var kvp in state.TerrainMap)
+        for (int q = 0; q <= 6; q++)
         {
-            if (kvp.Value == HexTerrain.Water)
-                continue;
-
-            var pos = kvp.Key;
+            for (int r = 0; r <= 6; r++)
+            {
+                var pos = new HexCoord(q, r);
+                
+                // Skip water hexes
+                if (state.WaterHexes.Contains(pos))
+                    continue;
             
-            // Check not occupied
-            bool occupied = state.Heroes.Any(h => h.IsAlive && !h.HasExited && h.Position == pos) ||
-                           state.Monsters.Any(m => m.IsAlive && m.Position == pos);
+                // Check not occupied
+                bool occupied = state.Heroes.Any(h => h.IsAlive && !h.HasExited && h.Position == pos) ||
+                               state.Monsters.Any(m => m.IsAlive && m.Position == pos);
             
-            if (!occupied && pos != state.ExitPosition)
-                validPositions.Add(pos);
+                if (!occupied && pos != state.ExitPosition)
+                    validPositions.Add(pos);
+            }
         }
 
         if (validPositions.Count == 0)
@@ -883,10 +904,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         sb.AppendLine($"--- Turn {state.TurnCount} | Phase: {state.CurrentPhase} | ActiveHero: {state.ActiveHeroIndex} ---");
         
         // Display hex grid (offset for readability)
-        int minQ = Math.Min(state.TerrainMap.Keys.Min(c => c.Q), state.ExitPosition.Q);
-        int maxQ = Math.Max(state.TerrainMap.Keys.Max(c => c.Q), state.ExitPosition.Q);
-        int minR = Math.Min(state.TerrainMap.Keys.Min(c => c.R), state.ExitPosition.R);
-        int maxR = Math.Max(state.TerrainMap.Keys.Max(c => c.R), state.ExitPosition.R);
+        // Determine map bounds from all terrain hexes
+        int minQ = 0, maxQ = 6, minR = 0, maxR = 6;
 
         foreach (var h in state.Heroes.Where(h => h.IsAlive && !h.HasExited))
         {
@@ -964,20 +983,19 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         if (coord == state.ExitPosition)
             return 'E';
 
-        // Terrain
-        if (state.TerrainMap.TryGetValue(coord, out var terrain))
-        {
-            return terrain switch
-            {
-                HexTerrain.Water => '~',
-                HexTerrain.Hill => '^',
-                HexTerrain.Tree => '*',
-                HexTerrain.TreeOnHill => 'T',
-                HexTerrain.Building => '#',
-                _ => '.'
-            };
-        }
+        // Terrain - check for combinations
+        bool isWater = state.WaterHexes.Contains(coord);
+        bool isHill = state.HillHexes.Contains(coord);
+        bool isTree = state.TreeHexes.Contains(coord);
+        bool isBuilding = state.BuildingHexes.Contains(coord);
 
-        return ' ';
+        if (isWater) return '~';
+        if (isHill && isTree) return 'T';  // Tree on hill
+        if (isHill && isBuilding) return 'B';  // Building on hill
+        if (isTree) return '*';
+        if (isBuilding) return '#';
+        if (isHill) return '^';
+
+        return '.';  // Ground
     }
 }

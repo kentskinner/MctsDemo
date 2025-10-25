@@ -11,11 +11,13 @@ class HexMageGameProgram
         Console.WriteLine("=== HEX MAGE GAME ===");
         Console.WriteLine("Tactical combat on a hex grid with terrain!");
         Console.WriteLine("Terrain: ~ = Water (impassable)");
-        Console.WriteLine("         ^ = Hill (+1 defense, 2 AP to enter)");
-        Console.WriteLine("         * = Tree (+2 defense, blocks LOS)");
-        Console.WriteLine("         T = Tree on Hill (+3 defense, 2 AP, blocks LOS)");
-        Console.WriteLine("         # = Building (+3 defense, 2 AP, blocks LOS)");
+        Console.WriteLine("         ^ = Hill (high ground gives attack bonus)");
+        Console.WriteLine("         * = Tree (cover, harder to hit)");
+        Console.WriteLine("         T = Tree on Hill (high ground + cover)");
+        Console.WriteLine("         # = Building (strong cover)");
+        Console.WriteLine("         B = Building on Hill (fortified position)");
         Console.WriteLine("         . = Ground");
+        Console.WriteLine("All hexes cost 1 AP to move into (except water which is impassable)");
         Console.WriteLine();
 
         var game = new HexTacticalGame(maxTurns: 15);
