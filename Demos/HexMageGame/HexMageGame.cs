@@ -22,15 +22,20 @@ public enum HeroStatus { Healthy, Injured, Dead }
 
 public enum Phase { HeroAction, MonsterAction, MonsterSpawn }
 
+// Item enums
+public enum WarriorItem { BoneSword, Shield, Rage }
+
 public enum HexActionType
 {
     ActivateHero,
     MoveNE, MoveE, MoveSE, MoveSW, MoveW, MoveNW,  // Six hex directions
     Attack,           // Regular heroes only
+    SneakAttack,      // Thief only - costs 2 attack actions, 7+ to hit, ignores terrain
     Cast,             // Mage only - roll 1d6 for spell points
     ZapMonster,       // Mage only - weak, 9+ to hit, costs 2 SP
     FireballMonster,  // Mage only - strong, 6+ to hit, costs 5 SP
     TeleportHero,     // Mage only - costs 4 SP
+    NimbleHero,       // Mage only - costs 4 SP, gives +1 attack action to target hero
     EndTurn
 }
 
@@ -97,12 +102,14 @@ public record HexHero(
     int AttackScore,
     int Range,
     int ActionsRemaining,
+    int AttackActionsRemaining,  // Separate counter for attack actions (for Nimble)
     int ZapRange,
     int TeleportRange,
     bool HasExited,
     int SpellPoints,      // Mage only
     bool HasCast,         // Mage only
-    int DefenseValue      // 1d6 roll needed to save (4+, 5+, 6+, or 0 for no defense)
+    int DefenseValue,     // 1d6 roll needed to save (4+, 5+, 6+, or 0 for no defense)
+    ImmutableHashSet<WarriorItem> WarriorItems  // Items acquired (Warrior only for now)
 )
 {
     public bool IsAlive => Status != HeroStatus.Dead;
@@ -138,7 +145,8 @@ public record HexGameState(
     ImmutableHashSet<(HexCoord, HexCoord)> Walls,
     PendingHexAttack? AttackResolution,
     bool ActiveHeroHasMoved,
-    int? PendingCastHeroIndex
+    int? PendingCastHeroIndex,
+    bool RageFreeAttackAvailable  // True if Warrior with Rage just got a kill
 );
 
 // ============== GAME LOGIC ==============
@@ -179,14 +187,26 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
 
     // Combined attack + defense probability
     // Returns probability of attack hitting AND penetrating defense
-    private double GetCombinedHitProbability(int attackScore, int defenseValue, bool ignoreDefense)
+    private double GetCombinedHitProbability(HexGameState state, int attackerIndex, int attackScore, int defenseValue, bool ignoreDefense)
     {
         double attackProb = Attack2d6Probability.GetValueOrDefault(attackScore, 0.0);
 
         if (ignoreDefense || defenseValue == 0)
             return attackProb;
 
-        double penetrateProb = Defense1d6Probability.GetValueOrDefault(defenseValue, 0.0);
+        // Check if attacker has Shield (improves defense to 4+)
+        int effectiveDefense = defenseValue;
+        if (attackerIndex >= 0 && attackerIndex < state.Heroes.Count)
+        {
+            var attacker = state.Heroes[attackerIndex];
+            if (attacker.WarriorItems.Contains(WarriorItem.Shield))
+            {
+                // Shield provides 4+ save if it's better than current defense
+                effectiveDefense = Math.Min(defenseValue, 4);
+            }
+        }
+
+        double penetrateProb = Defense1d6Probability.GetValueOrDefault(effectiveDefense, 0.0);
         return attackProb * penetrateProb;
     }
 
@@ -235,20 +255,24 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         // Create heroes (all start at origin)
         var heroes = ImmutableList.Create(
             new HexHero(0, HeroClass.Warrior, new HexCoord(0, 3), HeroStatus.Healthy,
-                AttackScore: 8, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 5),  // Warrior: 4+ save
+                AttackScore: 8, Range: 1, ActionsRemaining: 2, AttackActionsRemaining: 1, ZapRange: 0, TeleportRange: 0,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 5,
+                WarriorItems: ImmutableHashSet.Create(WarriorItem.BoneSword, WarriorItem.Shield, WarriorItem.Rage)),  // Warrior: 8+ attack, 5+ save, with all items
 
             new HexHero(1, HeroClass.Mage, new HexCoord(0, 3), HeroStatus.Healthy,
-                AttackScore: 0, Range: 0, ActionsRemaining: 2, ZapRange: 2, TeleportRange: 2,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 0),  // Mage: 6+ save (fragile)
+                AttackScore: 0, Range: 0, ActionsRemaining: 2, AttackActionsRemaining: 0, ZapRange: 2, TeleportRange: 2,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 0,
+                WarriorItems: ImmutableHashSet<WarriorItem>.Empty),  // Mage: no attack, no defense (uses spells)
 
             new HexHero(2, HeroClass.Elf, new HexCoord(0, 4), HeroStatus.Healthy,
-                AttackScore: 8, Range: 2, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6),   // Elf: 8+ attack, range 2, 6+ save
+                AttackScore: 8, Range: 2, ActionsRemaining: 2, AttackActionsRemaining: 1, ZapRange: 0, TeleportRange: 0,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6,
+                WarriorItems: ImmutableHashSet<WarriorItem>.Empty),   // Elf: 8+ attack, range 2, 6+ save
 
             new HexHero(3, HeroClass.Thief, new HexCoord(0, 4), HeroStatus.Healthy,
-                AttackScore: 9, Range: 1, ActionsRemaining: 2, ZapRange: 0, TeleportRange: 0,
-                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6)   // Thief: 9+ attack, 6+ save
+                AttackScore: 9, Range: 1, ActionsRemaining: 2, AttackActionsRemaining: 1, ZapRange: 0, TeleportRange: 0,
+                HasExited: false, SpellPoints: 0, HasCast: false, DefenseValue: 6,
+                WarriorItems: ImmutableHashSet<WarriorItem>.Empty)   // Thief: 9+ attack, 6+ save
         );
 
         // Initial monster
@@ -271,7 +295,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             Walls: walls.ToImmutableHashSet(),
             AttackResolution: null,
             ActiveHeroHasMoved: false,
-            PendingCastHeroIndex: null
+            PendingCastHeroIndex: null,
+            RageFreeAttackAvailable: false
         );
     }
 
@@ -310,6 +335,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             var target = state.Monsters[attack.DefenderIndex];
 
             double hitProbability = GetCombinedHitProbability(
+                state,
+                attack.AttackerIndex,
                 attack.AttackScore,
                 target.DefenseValue,
                 attack.IgnoreDefense);
@@ -407,7 +434,9 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
         }
 
         // Attack (regular heroes only)
-        if (activeHero.Class != HeroClass.Mage && activeHero.ActionsRemaining > 0)
+        // Can attack if (has AP AND has attack actions) OR if Rage free attack is available
+        if (activeHero.Class != HeroClass.Mage &&
+            ((activeHero.ActionsRemaining > 0 && activeHero.AttackActionsRemaining > 0) || state.RageFreeAttackAvailable))
         {
             foreach (var monster in state.Monsters.Where(m => m.IsAlive))
             {
@@ -415,6 +444,19 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 if (distance <= activeHero.Range && HasLineOfSight(state, activeHero.Position, monster.Position))
                 {
                     actions.Add(new HexAction(HexActionType.Attack, TargetIndex: monster.Index));
+                }
+            }
+        }
+
+        // Sneak Attack (Thief only, costs 2 attack actions, A7+, ignores terrain)
+        if (activeHero.Class == HeroClass.Thief && activeHero.AttackActionsRemaining >= 2)
+        {
+            foreach (var monster in state.Monsters.Where(m => m.IsAlive))
+            {
+                int distance = activeHero.Position.DistanceTo(monster.Position);
+                if (distance <= activeHero.Range)  // Range 1 for Thief, no LOS check for sneak attack
+                {
+                    actions.Add(new HexAction(HexActionType.SneakAttack, TargetIndex: monster.Index));
                 }
             }
         }
@@ -485,6 +527,19 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                         actions.Add(new HexAction(HexActionType.TeleportHero, 
                             TargetIndex: heroIdx, 
                             TargetPosition: destPos));
+                    }
+                }
+            }
+
+            // Nimble (costs 4 SP, range 0-1, requires LOS, can target non-Mage heroes)
+            if (activeHero.SpellPoints >= 4)
+            {
+                foreach (var hero in state.Heroes.Where(h => h.IsAlive && !h.HasExited && h.Class != HeroClass.Mage))
+                {
+                    int distance = activeHero.Position.DistanceTo(hero.Position);
+                    if (distance <= 1 && HasLineOfSight(state, activeHero.Position, hero.Position))
+                    {
+                        actions.Add(new HexAction(HexActionType.NimbleHero, TargetIndex: hero.Index));
                     }
                 }
             }
@@ -566,6 +621,11 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 int modifier = GetAttackModifier(newState, attacker.Position, targetPos);
                 int effectiveAttackScore = Math.Max(2, attacker.AttackScore + modifier);
 
+                // Check if this is a Rage free attack (don't consume AP or attack actions)
+                bool isRageAttack = newState.RageFreeAttackAvailable;
+                int apCostAttack = isRageAttack ? 0 : 1;
+                int attackActionCost = isRageAttack ? 0 : 1;
+
                 newState = newState with
                 {
                     AttackResolution = new PendingHexAttack(
@@ -575,7 +635,30 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                         IgnoreDefense: false),  // Normal attacks use defense
                     Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, attacker with
                     {
-                        ActionsRemaining = attacker.ActionsRemaining - 1
+                        ActionsRemaining = attacker.ActionsRemaining - apCostAttack,
+                        AttackActionsRemaining = attacker.AttackActionsRemaining - attackActionCost
+                    }),
+                    RageFreeAttackAvailable = false  // Clear the rage flag
+                };
+                break;
+
+            case HexActionType.SneakAttack:
+                var sneaker = newState.Heroes[newState.ActiveHeroIndex];
+                var sneakTargetPos = newState.Monsters[action.TargetIndex].Position;
+
+                // Sneak attack: A7+, ignores terrain modifiers (no GetAttackModifier call)
+                int sneakAttackScore = 7;
+
+                newState = newState with
+                {
+                    AttackResolution = new PendingHexAttack(
+                        newState.ActiveHeroIndex,
+                        action.TargetIndex,
+                        sneakAttackScore,
+                        IgnoreDefense: false),  // Sneak attacks still use defense
+                    Heroes = newState.Heroes.SetItem(newState.ActiveHeroIndex, sneaker with
+                    {
+                        AttackActionsRemaining = sneaker.AttackActionsRemaining - 2  // Costs 2 attack actions
                     })
                 };
                 break;
@@ -674,6 +757,24 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                 }
                 break;
 
+            case HexActionType.NimbleHero:
+                var nimbleCaster = newState.Heroes[newState.ActiveHeroIndex];
+                var nimbleTarget = newState.Heroes[action.TargetIndex];
+
+                newState = newState with
+                {
+                    Heroes = newState.Heroes
+                        .SetItem(newState.ActiveHeroIndex, nimbleCaster with
+                        {
+                            SpellPoints = nimbleCaster.SpellPoints - 4
+                        })
+                        .SetItem(action.TargetIndex, nimbleTarget with
+                        {
+                            AttackActionsRemaining = nimbleTarget.AttackActionsRemaining + 1
+                        })
+                };
+                break;
+
             case HexActionType.EndTurn:
                 if (newState.CurrentPhase == Phase.HeroAction)
                 {
@@ -722,6 +823,13 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
     {
         int modifier = 0;
 
+        // Get attacker for item checks
+        var attacker = state.Heroes.FirstOrDefault(h => h.Position == attackerPos);
+
+        // Bone Sword: -1 to attack (easier to hit)
+        if (attacker != null && attacker.WarriorItems.Contains(WarriorItem.BoneSword))
+            modifier -= 1;
+
         // Attacker on hill, target not: -1 (easier to hit)
         bool attackerOnHill = state.HillHexes.Contains(attackerPos);
         bool targetOnHill = state.HillHexes.Contains(targetPos);
@@ -739,7 +847,6 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             modifier += 1;
 
         // Adjacent allies with LOS (flanking bonus): -1 each
-        var attacker = state.Heroes.FirstOrDefault(h => h.Position == attackerPos);
         if (attacker != null)
         {
             foreach (var ally in state.Heroes.Where(h => h.IsAlive && h.Index != attacker.Index))
@@ -839,8 +946,8 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
     private HexGameState ResolveAttack(HexGameState state, bool hit)
     {
         var attack = state.AttackResolution!;
-        
-        var newState = state with { AttackResolution = null };
+
+        var newState = state with { AttackResolution = null, RageFreeAttackAvailable = false };
 
         if (hit)
         {
@@ -852,6 +959,16 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
                     deadMonster with { IsAlive = false }),
                 AccumulatedReward = newState.AccumulatedReward + 5
             };
+
+            // Check if attacker has Rage for free attack
+            if (attack.AttackerIndex >= 0 && attack.AttackerIndex < newState.Heroes.Count)
+            {
+                var attacker = newState.Heroes[attack.AttackerIndex];
+                if (attacker.WarriorItems.Contains(WarriorItem.Rage))
+                {
+                    newState = newState with { RageFreeAttackAvailable = true };
+                }
+            }
         }
 
         return AdvanceToNextPhaseOrHero(newState);
@@ -983,7 +1100,9 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             var hero = newHeroes[i];
             if (hero.IsAlive && !hero.HasExited)
             {
-                newHeroes = newHeroes.SetItem(i, hero with { ActionsRemaining = 2 });
+                // Reset AP and attack actions for new turn
+                int attackActions = hero.Class == HeroClass.Mage ? 0 : 1;  // Non-mages get 1 attack action per turn
+                newHeroes = newHeroes.SetItem(i, hero with { ActionsRemaining = 2, AttackActionsRemaining = attackActions });
             }
         }
 
@@ -1046,8 +1165,14 @@ public class HexTacticalGame : IGameModel<HexGameState, HexAction>
             if (h.HasExited)
                 sb.AppendLine($"  {i}: {h.Class} EXITED {h.Status}");
             else
-                sb.AppendLine($"  {i}: {h.Class} at ({h.Position.Q},{h.Position.R}) {h.Status} AP:{h.ActionsRemaining}" +
-                    (h.Class == HeroClass.Mage ? $" SP:{h.SpellPoints}" : ""));
+            {
+                string info = $"  {i}: {h.Class} at ({h.Position.Q},{h.Position.R}) {h.Status} AP:{h.ActionsRemaining}";
+                if (h.Class == HeroClass.Mage)
+                    info += $" SP:{h.SpellPoints}";
+                else
+                    info += $" AA:{h.AttackActionsRemaining}";  // AA = Attack Actions
+                sb.AppendLine(info);
+            }
         }
 
         sb.AppendLine($"Monsters: {state.Monsters.Count(m => m.IsAlive)} alive / {state.Monsters.Count} total");

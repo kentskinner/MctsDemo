@@ -116,10 +116,12 @@ class HexMageGameProgram
             HexActionType.MoveW => "MoveW",
             HexActionType.MoveNW => "MoveNW",
             HexActionType.Attack => $"Attack(M{action.TargetIndex})",
+            HexActionType.SneakAttack => $"SneakAttack(M{action.TargetIndex})",
             HexActionType.Cast => "Cast",
             HexActionType.ZapMonster => $"Zap(M{action.TargetIndex})",
             HexActionType.FireballMonster => $"Fireball(M{action.TargetIndex})",
             HexActionType.TeleportHero => $"Teleport(H{action.TargetIndex} to {action.TargetPosition})",
+            HexActionType.NimbleHero => $"Nimble(H{action.TargetIndex})",
             HexActionType.EndTurn => "EndTurn",
             _ => action.Type.ToString()
         };
